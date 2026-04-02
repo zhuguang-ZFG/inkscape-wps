@@ -1,0 +1,32 @@
+本说明供 inkscape-wps 开发与排障参阅；主程序不依赖奎享二进制。
+
+一、本机奎享 KDraw（macOS）
+----------------------------
+实测路径（2026）：
+  /Applications/KDraw.app/Contents/app/gcodeFonts/
+    内含多套 .gfont（如 HersheySerifMed.gfont、中文相关字体等）。
+  /Applications/KDraw.app/Contents/app/default.properties
+    与 grblapp 文档《奎享雕刻与 grblapp 参数对照》中的键可对照迁移。
+
+.gfont 为二进制；本仓库与 grblapp 均采用「由 kdraw 运行时导出为 JSON」的工作流，
+勿将受许可限制的字体二进制提交到公开 Git 仓库。
+
+二、与 grblapp 对齐的 JSON
+----------------------------
+- 识别：顶层含 glyphs，值为多段折线，点为 { "x", "y", 可选 "t" }。
+- 解析实现：inkscape_wps.core.kuixiang_font（逻辑对齐 grblapp gfont_loader / font_schema）。
+- 导出工具可参考 grblapp：tools/export_kuixiang_from_kdraw.py（需本机 JRE + kdraw.jar）。
+
+三、Inkscape 与「画图」
+----------------------------
+Inkscape 为 SVG/矢量编辑，路径多来自 Potrace、Bezier、布尔运算等，与单线汉字库是不同管线。
+若要做「手绘/导入轮廓再转单线」类功能，可参阅：
+  - Inkscape 仓库：https://gitlab.com/inkscape/inkscape
+  - 2geom 等几何库；或先做 SVG 路径简化再抽中心线（工程量大，本项目当前以文本 + 单线字库为主）。
+
+四、开源单线体（Hershey 等）
+----------------------------
+本仓库已在 `inkscape_wps/data/fonts/` 随包放入经筛选的 Hershey .jhf 子集、ASCII 映射 JSON 及
+`Hershey-COPYING.txt` 署名文件；完整许可条文见该目录 README.txt。
+若需同步上游全量文件，可运行 `tools/download_single_line_fonts.sh` 后执行
+`tools/generate_hershey_jhf_maps.py`，并删去仍为占位索引 `12345` 的 .jhf。

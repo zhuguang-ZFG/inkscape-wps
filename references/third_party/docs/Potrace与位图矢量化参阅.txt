@@ -1,0 +1,12 @@
+参阅：位图 → 矢量（SVG）常用开源工具
+
+1. Potrace（http://potrace.sourceforge.net）
+   - 经典、命令行，Inkscape「路径 → 临摹位图」等工具常在其之上封装。
+   - 许可：GPL。本仓库通过子进程调用可执行文件，不随包分发 Potrace 二进制。
+
+2. Autotrace（http://autotrace.sourceforge.net）
+   - 备选命令行；接口与 Potrace 不同，本应用在 Potrace 不可用时尝试调用。
+
+3. 依赖说明
+   - 上位机侧使用 Pillow 将 PNG/JPEG 等转为 BMP 再送 Potrace。
+   - 用户需自行安装 potrace（如 macOS: brew install potrace）。
