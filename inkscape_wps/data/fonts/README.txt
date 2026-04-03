@@ -28,3 +28,7 @@
 ------------
 若从上游更新了 .jhf，可在仓库根执行：
   python3 tools/generate_hershey_jhf_maps.py
+
+中文演示字库
+------------
+- **cjk_stroke_sample.json**：仅含少量汉字的极简演示笔画（非印刷级）。正式中文书写请用奎享导出 JSON 等大字库，并在界面「合并字库…」中与主编译库叠加。

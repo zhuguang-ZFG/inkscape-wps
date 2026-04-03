@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict
@@ -15,6 +16,8 @@ except ImportError:
 import tomli_w
 
 from .grbl_firmware_ref import GRBL_ESP32_DEFAULT_RX_BUFFER_SIZE
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -65,8 +68,13 @@ class MachineConfig:
 
     # --- 单线字库（空字符串则使用包内 data/hershey_roman.json）---
     stroke_font_json_path: str = ""
+    # 可选第二路 JSON/JHF：在主编译结果上合并字形（覆盖同码位），便于大包中文库与 ASCII 字库叠加
+    stroke_font_merge_json_path: str = ""
     # 奎享导出 JSON 解析时的 font 单位→毫米系数（与 grblapp gfont_loader 默认一致）
     kuixiang_mm_per_unit: float = 0.01530
+
+    # 单线字形编辑区行距系数（相对内置基准 1.45，见 StrokeLayoutEngine._leading_du）
+    stroke_editor_line_spacing: float = 1.45
 
     def to_json_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -78,8 +86,12 @@ class MachineConfig:
         if "grbl_rx_buffer_size" not in filtered and "grbl_buffer_target" in d:
             try:
                 filtered["grbl_rx_buffer_size"] = max(16, int(d["grbl_buffer_target"]))
-            except (TypeError, ValueError):
-                pass
+            except (TypeError, ValueError) as e:
+                _log.warning(
+                    "忽略无效的 grbl_buffer_target=%r，未写入 grbl_rx_buffer_size：%s",
+                    d.get("grbl_buffer_target"),
+                    e,
+                )
         return cls(**filtered)
 
     def save_json(self, path: Path) -> None:

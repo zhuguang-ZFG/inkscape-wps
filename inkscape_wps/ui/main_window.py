@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import time
 from pathlib import Path
@@ -12,6 +13,7 @@ from PyQt6.QtGui import (
     QAction,
     QBrush,
     QColor,
+    QCloseEvent,
     QDesktopServices,
     QFont,
     QKeySequence,
@@ -19,6 +21,8 @@ from PyQt6.QtGui import (
     QPen,
     QShortcut,
     QTextCharFormat,
+    QUndoStack,
+    QPainter,
 )
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -40,6 +44,7 @@ from PyQt6.QtWidgets import (
     QSlider,
     QSpinBox,
     QSplitter,
+    QSizePolicy,
     QStackedWidget,
     QStatusBar,
     QTextEdit,
@@ -59,15 +64,27 @@ from inkscape_wps.core.hershey import HersheyFontMapper, map_document_lines
 from inkscape_wps.core.kdraw_paths import suggest_gcode_fonts_dirs
 from inkscape_wps.core.raster_trace import trace_image_to_svg
 from inkscape_wps.core.serial_discovery import filter_ports, list_port_infos
+from inkscape_wps.core.project_io import (
+    deserialize_vector_paths,
+    load_project_file,
+    save_project_file,
+    serialize_vector_paths,
+    write_text_atomic,
+)
 from inkscape_wps.core.svg_import import vector_paths_from_svg_file, vector_paths_from_svg_string
 from inkscape_wps.core.types import Point, VectorPath, paths_bounding_box
+from inkscape_wps.ui.nonword_undo import NonWordEditCommand, capture_nonword_state
 from inkscape_wps.ui.document_bridge import apply_default_tab_stops, text_edit_to_layout_lines
+from inkscape_wps.ui.math_symbols import populate_qmenu_symbols
 from inkscape_wps.ui.drawing_view_model import DrawingViewModel
 from inkscape_wps.ui.presentation_editor import WpsPresentationEditor
 from inkscape_wps.ui.table_editor import WpsTableEditor
 from inkscape_wps.ui.ribbon import RibbonGroup, RibbonTabVSep, RibbonVSeparator, WpsRibbon
 from inkscape_wps.ui.wps_theme import apply_wps_theme
 from inkscape_wps.ui.wps_widgets import make_horizontal_ruler_mm
+
+# 预览区手绘：相邻采样点最小间距（mm，文档坐标）
+_MIN_SKETCH_SAMPLE_MM = 0.2
 
 
 def _package_data_dir() -> Path:
@@ -90,6 +107,14 @@ def _resolve_stroke_font_path(cfg: MachineConfig) -> Path | None:
     return None
 
 
+def _resolve_merge_stroke_font_path(cfg: MachineConfig) -> Path | None:
+    raw = (cfg.stroke_font_merge_json_path or "").strip()
+    if not raw:
+        return None
+    p = Path(raw).expanduser()
+    return p if p.is_file() else None
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -104,11 +129,18 @@ class MainWindow(QMainWindow):
 
         self._mapper = HersheyFontMapper(
             _resolve_stroke_font_path(self._cfg),
+            merge_font_path=_resolve_merge_stroke_font_path(self._cfg),
             kuixiang_mm_per_unit=self._cfg.kuixiang_mm_per_unit,
         )
         self._view_model = DrawingViewModel(self._cfg)
         self._grbl: Optional[GrblController] = None
         self._pending_bf_for_rx_spin = False
+        self._nonword_undo_stack = QUndoStack(self)
+        self._nonword_undo_stack.setUndoLimit(300)
+        self._nonword_undo_anchor: tuple[str, str, str] = ("", "", "")
+        self._nonword_undo_restoring = False
+        self._sketch_paths: List[VectorPath] = []
+        self._sketch_drag_pts: Optional[List[Point]] = None
         self._insert_paths_base: List[VectorPath] = []
         self._insert_vector_scale: float = 1.0
         self._insert_vector_cx_mm: float = 0.0
@@ -119,10 +151,16 @@ class MainWindow(QMainWindow):
         self._insert_move_drag: Optional[dict] = None
         self._overlay_handle_rects_scene: List[QRectF] = []
         self._insert_overlay_bbox_scene: Optional[QRectF] = None
+        self._project_path: Optional[Path] = None
 
         self._build_ui()
         self._table_editor.set_font_point_size_resolver(lambda: float(self._size_spin.value()))
         _f0 = self._editor.currentFont()
+        # 提升文字抗锯齿策略（对“字体不清晰”通常最有效之一）
+        try:
+            _f0.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+        except Exception:
+            pass
         self._table_editor.apply_document_font(_f0)
         self._presentation_editor.apply_document_font(_f0)
         self._build_menus_and_quick_toolbar()
@@ -143,6 +181,8 @@ class MainWindow(QMainWindow):
 
         self._table_editor.contentChanged.connect(self._on_nonword_content_changed)
         self._presentation_editor.contentChanged.connect(self._on_nonword_content_changed)
+        self._nonword_undo_stack.canUndoChanged.connect(self._refresh_undo_redo_from_stacks)
+        self._nonword_undo_stack.canRedoChanged.connect(self._refresh_undo_redo_from_stacks)
 
         self._mapper.preload_background()
         self._on_document_changed()
@@ -151,12 +191,25 @@ class MainWindow(QMainWindow):
         self._sync_undo_actions(self._editor.document().isUndoAvailable())
         _d = self._editor.document()
         self._sync_redo_actions(_d.isRedoAvailable() if hasattr(_d, "isRedoAvailable") else False)
+        self._reset_nonword_undo_anchor()
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if obj is self._preview.viewport():
             et = event.type()
-            if et == QEvent.Type.Leave and self._insert_resize_drag is None and self._insert_move_drag is None:
+            if (
+                et == QEvent.Type.Leave
+                and self._insert_resize_drag is None
+                and self._insert_move_drag is None
+                and self._sketch_drag_pts is None
+            ):
                 self._preview.viewport().unsetCursor()
+            if et in (
+                QEvent.Type.MouseButtonPress,
+                QEvent.Type.MouseMove,
+                QEvent.Type.MouseButtonRelease,
+            ):
+                if self._preview_sketch_mouse_event(event):
+                    return True
             if self._insert_paths_base and et in (
                 QEvent.Type.MouseButtonPress,
                 QEvent.Type.MouseMove,
@@ -178,23 +231,29 @@ class MainWindow(QMainWindow):
         self._fill_standard_file_menu(m_file)
 
         m_edit = mb.addMenu("编辑")
-        self._act_undo = QAction("撤销", self, triggered=self._editor.undo)
+        self._act_undo = QAction("撤销", self, triggered=self._perform_undo)
         m_edit.addAction(self._act_undo)
-        self._act_redo = QAction("重做", self, triggered=self._editor.redo)
+        self._act_redo = QAction("重做", self, triggered=self._perform_redo)
         m_edit.addAction(self._act_redo)
         m_edit.addSeparator()
         m_edit.addAction("全选", self._select_all_current)
 
         m_tool = mb.addMenu("工具")
         m_tool.addAction("生成 G-code…", self._show_gcode)
+        m_tool.addAction("导出 G-code 到文件…", self._export_gcode_to_file)
 
         m_help = mb.addMenu("帮助")
+        m_help.addAction("快速入门…", self._show_quick_start)
+        m_help.addAction("查阅 SPEC（规格说明）…", self._open_spec_document)
+        m_help.addAction("查阅 AI 提示词指南…", self._open_ai_prompts_document)
+        m_help.addSeparator()
         m_help.addAction(
             "关于",
             lambda: QMessageBox.information(
                 self,
                 "关于",
-                "写字机上位机 · WPS 风格界面\n核心逻辑与 PyQt 视图分离，便于后续移植。",
+                "写字机上位机 · WPS 风格界面\n核心逻辑与 PyQt 视图分离，便于后续移植。\n"
+                "详细能力见仓库根目录 SPEC.md；AI 协作提示词见 AI_PROMPTS.md。",
             ),
         )
 
@@ -204,8 +263,18 @@ class MainWindow(QMainWindow):
         qt.addAction(self._act_undo)
         qt.addAction(self._act_redo)
         qt.addSeparator()
+        self._act_open_project = QAction("打开工程", self, triggered=self._open_project)
+        self._act_open_project.setShortcut(QKeySequence.StandardKey.Open)
+        self._act_open_project.setToolTip("打开工程（Ctrl+O / Cmd+O）")
+        qt.addAction(self._act_open_project)
+        self._act_save_project = QAction("保存工程", self, triggered=self._save_project)
+        self._act_save_project.setShortcut(QKeySequence.StandardKey.Save)
+        self._act_save_project.setToolTip("保存工程（Ctrl+S / Cmd+S）；无路径时另存为")
+        qt.addAction(self._act_save_project)
+        qt.addSeparator()
         qt.addAction(QAction("保存配置", self, triggered=self._save_config))
         qt.addAction(QAction("生成 G-code", self, triggered=self._show_gcode))
+        qt.addAction(QAction("导出 G-code", self, triggered=self._export_gcode_to_file))
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -227,6 +296,10 @@ class MainWindow(QMainWindow):
         self._mode_btns: list[QPushButton] = []
         for idx, lab in enumerate(("文字", "表格", "演示")):
             b = QPushButton(lab)
+            # 让“组件”模式按钮更像 WPS：固定尺寸 + 明确选中态样式
+            b.setObjectName("WpsModeTabButton")
+            b.setFixedSize(76, 30)
+            b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             b.setCheckable(True)
             b.clicked.connect(lambda _checked=False, i=idx: self._set_editor_mode(i))
             self._mode_btns.append(b)
@@ -247,6 +320,14 @@ class MainWindow(QMainWindow):
         self._populate_insert_vector_menu(ins_menu)
         ins_btn.setMenu(ins_menu)
         g_ins.add_widget(ins_btn)
+        sym_btn = QToolButton()
+        sym_btn.setText("符号")
+        sym_btn.setToolTip("插入数学、单位等 Unicode 符号（「文字」或「演示」页）")
+        sym_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        sym_menu = QMenu(self)
+        populate_qmenu_symbols(sym_menu, self._insert_math_symbol)
+        sym_btn.setMenu(sym_menu)
+        g_ins.add_widget(sym_btn)
         start_row.addWidget(g_ins)
         start_row.addWidget(RibbonVSeparator())
 
@@ -309,6 +390,20 @@ class MainWindow(QMainWindow):
         self._insert_page_center_btn.clicked.connect(self._center_insert_vector_on_page)
         row_off.addWidget(self._insert_page_center_btn)
         vec_v.addLayout(row_off)
+        row_sk = QHBoxLayout()
+        row_sk.setSpacing(8)
+        self._cb_sketch_pen = QCheckBox("手绘笔")
+        self._cb_sketch_pen.setToolTip(
+            "在右侧路径预览上按住左键拖动绘制折线（文档毫米坐标）；"
+            "与插入矢量一并参与 G-code。开启时优先于拖入预览的缩放/平移。"
+        )
+        row_sk.addWidget(self._cb_sketch_pen)
+        b_clr_sk = QPushButton("清除手绘")
+        b_clr_sk.setToolTip("清空预览手绘路径（不影响插入的 SVG/位图矢量）")
+        b_clr_sk.clicked.connect(self._clear_sketch_paths)
+        row_sk.addWidget(b_clr_sk)
+        row_sk.addStretch(1)
+        vec_v.addLayout(row_sk)
         g_vec.add_widget(vec_tool)
         start_row.addWidget(g_vec)
         start_row.addWidget(RibbonVSeparator())
@@ -373,6 +468,18 @@ class MainWindow(QMainWindow):
         b_kd.setToolTip("在访达中打开本机 KDraw 的 gcodeFonts（.gfont 需先导出为 JSON）")
         b_kd.clicked.connect(self._open_kdraw_gcode_fonts_dir)
         g_stroke.add_widget(b_kd)
+        b_merge = QPushButton("合并字库…")
+        b_merge.setToolTip("叠加第二份 JSON（奎享/Hershey 格式），覆盖同码位；可与主编译大包中文库组合")
+        b_merge.clicked.connect(self._pick_stroke_merge_json)
+        g_stroke.add_widget(b_merge)
+        b_merge_clr = QPushButton("清除合并")
+        b_merge_clr.setToolTip("移除叠加字库，仅保留主编译")
+        b_merge_clr.clicked.connect(self._clear_stroke_merge_json)
+        g_stroke.add_widget(b_merge_clr)
+        b_cjk = QPushButton("中文小样")
+        b_cjk.setToolTip("将包内 cjk_stroke_sample.json 设为合并字库（演示笔画，非大字库）")
+        b_cjk.clicked.connect(self._use_cjk_sample_merge_font)
+        g_stroke.add_widget(b_cjk)
         start_row.addWidget(g_stroke)
         start_row.addStretch(1)
 
@@ -507,6 +614,65 @@ class MainWindow(QMainWindow):
         dev_row.addWidget(g_z)
         dev_row.addWidget(RibbonVSeparator())
 
+        g_pen = RibbonGroup("抬落笔方式")
+        g_pen.add_widget(QLabel("模式"))
+        self._pen_mode_combo = QComboBox()
+        self._pen_mode_combo.addItem("Z 轴 (G1 Z)", "z")
+        self._pen_mode_combo.addItem("M3 / M5 (伺服笔)", "m3m5")
+        self._pen_mode_combo.setToolTip(
+            "默认用 Z 抬落笔；若固件用 M5 抬笔、M3 S… 落笔（伺服笔等），选 M3/M5。"
+        )
+        self._pen_mode_combo.currentIndexChanged.connect(self._on_pen_mode_ui_changed)
+        g_pen.add_widget(self._pen_mode_combo)
+        g_pen.add_widget(QLabel("M3 S"))
+        self._m3_s_spin = QSpinBox()
+        self._m3_s_spin.setRange(0, 10000)
+        self._m3_s_spin.setValue(max(0, int(self._cfg.gcode_m3_s_value)))
+        self._m3_s_spin.setToolTip("落笔行 M3 S 的数值（仅 M3/M5 模式生效）。")
+        self._m3_s_spin.valueChanged.connect(self._sync_cfg_widgets)
+        g_pen.add_widget(self._m3_s_spin)
+        dev_row.addWidget(g_pen)
+        dev_row.addWidget(RibbonVSeparator())
+
+        g_gc_extra = RibbonGroup("程序附加")
+        gc_wrap = QWidget()
+        gc_lay = QVBoxLayout(gc_wrap)
+        gc_lay.setContentsMargins(0, 0, 0, 0)
+        gc_lay.setSpacing(2)
+        self._gcode_prefix_edit = QPlainTextEdit()
+        self._gcode_prefix_edit.setPlaceholderText("前缀：F 行后、笔画前，每行一条")
+        self._gcode_prefix_edit.setMaximumHeight(40)
+        self._gcode_prefix_edit.setMaximumWidth(200)
+        gc_lay.addWidget(QLabel("前缀"))
+        gc_lay.addWidget(self._gcode_prefix_edit)
+        self._gcode_suffix_edit = QPlainTextEdit()
+        self._gcode_suffix_edit.setPlaceholderText("后缀：抬笔后、M2/M30 前")
+        self._gcode_suffix_edit.setMaximumHeight(40)
+        self._gcode_suffix_edit.setMaximumWidth(200)
+        gc_lay.addWidget(QLabel("后缀"))
+        gc_lay.addWidget(self._gcode_suffix_edit)
+        row_gc_chk = QHBoxLayout()
+        self._cb_gcode_g92 = QCheckBox("G92 程序零点")
+        self._cb_gcode_g92.setToolTip("生成 G92 X0 Y0 Z0（与现有配置一致）")
+        row_gc_chk.addWidget(self._cb_gcode_g92)
+        self._cb_gcode_m30 = QCheckBox("结尾 M30")
+        self._cb_gcode_m30.setToolTip("以 M30 结束（常用于换纸类流程，行为依固件而定）")
+        row_gc_chk.addWidget(self._cb_gcode_m30)
+        gc_lay.addLayout(row_gc_chk)
+        row_gc_btn = QHBoxLayout()
+        b_m800 = QPushButton("+M800")
+        b_m800.setToolTip("在前缀末尾追加一行 M800（奎享等授权占位，请按固件修改）")
+        b_m800.clicked.connect(lambda: self._append_gcode_line("prefix", "M800"))
+        row_gc_btn.addWidget(b_m800)
+        b_esp = QPushButton("+ESP")
+        b_esp.setToolTip("在前缀追加示例 [ESP800]（Grbl_Esp32 等扩展指令，按固件文档修改）")
+        b_esp.clicked.connect(lambda: self._append_gcode_line("prefix", "[ESP800]"))
+        row_gc_btn.addWidget(b_esp)
+        gc_lay.addLayout(row_gc_btn)
+        g_gc_extra.add_widget(gc_wrap)
+        dev_row.addWidget(g_gc_extra)
+        dev_row.addWidget(RibbonVSeparator())
+
         g_run = RibbonGroup("运行")
         self._connect_btn = QPushButton("连接")
         self._connect_btn.clicked.connect(self._toggle_serial)
@@ -575,9 +741,10 @@ class MainWindow(QMainWindow):
         self._editor.setObjectName("DocumentEditor")
         self._editor.setPlaceholderText("在此编辑文字内容…")
         self._editor.document().setDocumentMargin(0.0)
-        self._apply_font_size(self._size_spin.value())
         self._table_editor = WpsTableEditor(self._cfg)
         self._presentation_editor = WpsPresentationEditor(self._cfg)
+        # _apply_font_size 依赖 _table_editor / _presentation_editor；因此需在它们初始化之后调用。
+        self._apply_font_size(self._size_spin.value())
         self._stack.addWidget(self._editor)
         self._stack.addWidget(self._table_editor)
         self._stack.addWidget(self._presentation_editor)
@@ -600,7 +767,12 @@ class MainWindow(QMainWindow):
         pf.addWidget(QLabel("路径预览"))
         self._preview = QGraphicsView()
         self._preview.setMinimumHeight(220)
-        self._preview.setRenderHints(self._preview.renderHints())
+        # 预览线条抗锯齿：改善小线段/字体路径观感
+        self._preview.setRenderHints(
+            self._preview.renderHints()
+            | QPainter.RenderHint.Antialiasing
+            | QPainter.RenderHint.SmoothPixmapTransform
+        )
         pf.addWidget(self._preview)
         tv.addWidget(prev_frame, stretch=2)
 
@@ -619,6 +791,8 @@ class MainWindow(QMainWindow):
 
         self._cb_bt_only.setChecked(self._cfg.serial_show_bluetooth_only)
         self._apply_cfg_to_coord_widgets()
+        self._apply_pen_mode_widgets()
+        self._apply_gcode_extra_widgets_from_cfg()
         self._refresh_ports()
 
     def _build_status_bar(self) -> None:
@@ -669,13 +843,14 @@ class MainWindow(QMainWindow):
                 d.isRedoAvailable() if hasattr(d, "isRedoAvailable") else False
             )
         else:
-            self._act_undo.setEnabled(False)
-            self._act_redo.setEnabled(False)
+            self._act_undo.setEnabled(self._nonword_undo_stack.canUndo())
+            self._act_redo.setEnabled(self._nonword_undo_stack.canRedo())
         self._on_document_changed()
         self._update_status_bar()
         self._update_window_title()
 
     def _on_nonword_content_changed(self) -> None:
+        self._push_nonword_undo_snapshot()
         self._nonword_modified = True
         self._on_document_changed()
         self._update_window_title()
@@ -690,23 +865,94 @@ class MainWindow(QMainWindow):
             star = "● " if self._nonword_modified else ""
         self.setWindowTitle(f"{star}{self._doc_title} - 写字机上位机")
 
-    def _new_document(self) -> None:
-        self._editor.clear()
-        self._table_editor.clear_all()
-        self._presentation_editor.clear_all()
-        self._insert_paths_base.clear()
-        self._insert_vector_scale = 1.0
-        self._insert_vector_dx_mm = 0.0
-        self._insert_vector_dy_mm = 0.0
-        self._insert_resize_drag = None
-        self._insert_move_drag = None
-        self._insert_overlay_bbox_scene = None
-        self._overlay_handle_rects_scene.clear()
-        self._preview.viewport().unsetCursor()
-        self._nonword_modified = False
-        self._doc_title = "未命名文档"
-        self._sync_doc_title_label()
+    def _is_document_dirty(self) -> bool:
+        return bool(self._editor.document().isModified() or self._nonword_modified)
+
+    def _mark_saved_state(self) -> None:
         self._editor.document().setModified(False)
+        self._nonword_modified = False
+        self._update_window_title()
+
+    def _ask_save_if_dirty(self, title: str, message: str) -> bool:
+        """有未保存修改时询问；返回 False 表示用户取消。"""
+        if not self._is_document_dirty():
+            return True
+        r = QMessageBox.question(
+            self,
+            title,
+            message,
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if r == QMessageBox.StandardButton.Cancel:
+            return False
+        if r == QMessageBox.StandardButton.Discard:
+            return True
+        return self._save_project()
+
+    def _repo_root_file(self, name: str) -> Path:
+        return Path(__file__).resolve().parents[2] / name
+
+    def _show_quick_start(self) -> None:
+        QMessageBox.information(
+            self,
+            "快速入门",
+            "启动（仓库根目录）：\n  python3 -m inkscape_wps\n\n"
+            "简要流程：\n"
+            "• 在「文字 / 表格 / 演示」编辑；右侧为路径预览。\n"
+            "• 「文件」→ 保存工程（*.inkwps.json）；机床参数用「保存配置…」（TOML/JSON）。\n"
+            "• 「设备」→ 抬落笔方式（Z 或 M3/M5）、串口、连接后可发送 G-code。\n"
+            "• 「工具」或「文件」→ 导出 G-code 到 .nc / .gcode 等。\n\n"
+            "完整能力与维护约定见 SPEC.md；AI 协作提示词见 AI_PROMPTS.md。",
+        )
+
+    def _open_spec_document(self) -> None:
+        spec = self._repo_root_file("SPEC.md")
+        if not spec.is_file():
+            QMessageBox.information(
+                self,
+                "帮助",
+                "未在预期路径找到 SPEC.md。\n若从安装包运行，请参阅发布包内文档。",
+            )
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(spec.resolve())))
+
+    def _open_ai_prompts_document(self) -> None:
+        doc = self._repo_root_file("AI_PROMPTS.md")
+        if not doc.is_file():
+            QMessageBox.information(self, "帮助", "未在预期路径找到 AI_PROMPTS.md。")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(doc.resolve())))
+
+    def _new_document(self) -> None:
+        if not self._ask_save_if_dirty("新建", "当前内容已修改，是否保存工程？"):
+            return
+        self._nonword_undo_restoring = True
+        try:
+            self._editor.clear()
+            self._table_editor.clear_all()
+            self._presentation_editor.clear_all()
+            self._sketch_paths.clear()
+            self._sketch_drag_pts = None
+            self._insert_paths_base.clear()
+            self._insert_vector_scale = 1.0
+            self._insert_vector_dx_mm = 0.0
+            self._insert_vector_dy_mm = 0.0
+            self._insert_resize_drag = None
+            self._insert_move_drag = None
+            self._insert_overlay_bbox_scene = None
+            self._overlay_handle_rects_scene.clear()
+            self._preview.viewport().unsetCursor()
+            self._nonword_modified = False
+            self._doc_title = "未命名文档"
+            self._project_path = None
+            self._sync_doc_title_label()
+            self._editor.document().setModified(False)
+        finally:
+            self._nonword_undo_restoring = False
+        self._reset_nonword_undo_anchor()
         self._update_window_title()
         self._on_document_changed()
 
@@ -748,24 +994,183 @@ class MainWindow(QMainWindow):
             if hasattr(d, "isRedoAvailable"):
                 self._act_redo.setEnabled(d.isRedoAvailable())
         else:
-            self._act_undo.setEnabled(False)
-            self._act_redo.setEnabled(False)
+            self._act_undo.setEnabled(self._nonword_undo_stack.canUndo())
+            self._act_redo.setEnabled(self._nonword_undo_stack.canRedo())
 
     def _sync_undo_actions(self, available: bool) -> None:
         if self._stack.currentIndex() != 0:
-            self._act_undo.setEnabled(False)
+            self._act_undo.setEnabled(self._nonword_undo_stack.canUndo())
         else:
             self._act_undo.setEnabled(available)
 
     def _sync_redo_actions(self, available: bool) -> None:
         if self._stack.currentIndex() != 0:
-            self._act_redo.setEnabled(False)
+            self._act_redo.setEnabled(self._nonword_undo_stack.canRedo())
         else:
             self._act_redo.setEnabled(available)
+
+    def _refresh_undo_redo_from_stacks(self) -> None:
+        if self._stack.currentIndex() != 0:
+            self._act_undo.setEnabled(self._nonword_undo_stack.canUndo())
+            self._act_redo.setEnabled(self._nonword_undo_stack.canRedo())
+
+    def _perform_undo(self) -> None:
+        if self._stack.currentIndex() == 0:
+            self._editor.undo()
+        else:
+            self._nonword_undo_stack.undo()
+
+    def _perform_redo(self) -> None:
+        if self._stack.currentIndex() == 0:
+            self._editor.redo()
+        else:
+            self._nonword_undo_stack.redo()
+
+    def _capture_nonword_tuple(self) -> tuple[str, str, str]:
+        return capture_nonword_state(
+            self._table_editor.to_project_blob(),
+            self._presentation_editor.slides_storage(),
+            serialize_vector_paths(self._sketch_paths),
+        )
+
+    def _restore_nonword_state(self, state: tuple[str, str, str]) -> None:
+        self._nonword_undo_restoring = True
+        try:
+            tb_s, sl_s, sk_s = state
+            self._table_editor.from_project_blob(json.loads(tb_s))
+            slides = json.loads(sl_s)
+            self._presentation_editor.load_slides(slides if isinstance(slides, list) else [""])
+            self._sketch_paths = deserialize_vector_paths(json.loads(sk_s))
+        finally:
+            self._nonword_undo_restoring = False
+        self._nonword_undo_anchor = state
+        self._on_document_changed()
+        self._update_window_title()
+
+    def _push_nonword_undo_snapshot(self) -> None:
+        if self._nonword_undo_restoring:
+            return
+        cur = self._capture_nonword_tuple()
+        if cur == self._nonword_undo_anchor:
+            return
+        self._nonword_undo_stack.push(
+            NonWordEditCommand(self, self._nonword_undo_anchor, cur, text="表格 / 演示 / 手绘")
+        )
+        self._nonword_undo_anchor = cur
+
+    def _reset_nonword_undo_anchor(self) -> None:
+        self._nonword_undo_stack.clear()
+        self._nonword_undo_anchor = self._capture_nonword_tuple()
+
+    def _mm_yup_from_scene(self, sp: QPointF, mpp: float) -> Point:
+        x_mm = sp.x() * mpp
+        y_mm = self._cfg.page_height_mm - sp.y() * mpp
+        pw, ph = float(self._cfg.page_width_mm), float(self._cfg.page_height_mm)
+        return Point(max(0.0, min(pw, x_mm)), max(0.0, min(ph, y_mm)))
+
+    def _preview_sketch_mouse_event(self, event: QEvent) -> bool:
+        if not self._cb_sketch_pen.isChecked():
+            return False
+        if not isinstance(event, QMouseEvent):
+            return False
+        mpp = self._mm_per_px()
+        et = event.type()
+        sp = self._preview.mapToScene(event.position())
+        if et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            p = self._mm_yup_from_scene(sp, mpp)
+            self._sketch_drag_pts = [p]
+            # 拖动期间强制接管鼠标，避免 macOS/HiDPI 下事件丢失导致“拖不动”
+            self._preview.viewport().grabMouse()
+            event.accept()
+            self._preview.viewport().setCursor(Qt.CursorShape.CrossCursor)
+            return True
+        if et == QEvent.Type.MouseMove and self._sketch_drag_pts is not None:
+            p = self._mm_yup_from_scene(sp, mpp)
+            last = self._sketch_drag_pts[-1]
+            if math.hypot(p.x - last.x, p.y - last.y) >= _MIN_SKETCH_SAMPLE_MM:
+                self._sketch_drag_pts.append(p)
+            event.accept()
+            return True
+        if et == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+            if self._sketch_drag_pts is None:
+                return False
+            pts = self._sketch_drag_pts
+            self._sketch_drag_pts = None
+            self._preview.viewport().releaseMouse()
+            self._preview.viewport().unsetCursor()
+            if len(pts) >= 2:
+                self._sketch_paths.append(VectorPath(tuple(pts), pen_down=True))
+            elif len(pts) == 1:
+                q = pts[0]
+                self._sketch_paths.append(VectorPath((q, q), pen_down=True))
+            else:
+                return True
+            self._nonword_modified = True
+            self._push_nonword_undo_snapshot()
+            self._update_window_title()
+            self._on_document_changed()
+            return True
+        return False
+
+    def _clear_sketch_paths(self) -> None:
+        if not self._sketch_paths:
+            return
+        self._sketch_paths.clear()
+        self._nonword_modified = True
+        self._push_nonword_undo_snapshot()
+        self._update_window_title()
+        self._on_document_changed()
+        self.statusBar().showMessage("已清除手绘路径", 2500)
+
+    def _append_gcode_line(self, where: str, line: str) -> None:
+        ln = line.strip()
+        if not ln:
+            return
+        ed = self._gcode_prefix_edit if where == "prefix" else self._gcode_suffix_edit
+        t = ed.toPlainText().rstrip()
+        ed.setPlainText(t + ("\n" if t else "") + ln)
+        self._sync_cfg_widgets()
+
+    def _apply_gcode_extra_widgets_from_cfg(self) -> None:
+        self._gcode_prefix_edit.setPlainText(self._cfg.gcode_program_prefix or "")
+        self._gcode_suffix_edit.setPlainText(self._cfg.gcode_program_suffix or "")
+        self._cb_gcode_g92.setChecked(bool(self._cfg.gcode_use_g92))
+        self._cb_gcode_m30.setChecked(bool(self._cfg.gcode_end_m30))
+
+    def _pick_stroke_merge_json(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择合并用单线字库 JSON",
+            str(Path.home()),
+            "JSON (*.json);;所有文件 (*)",
+        )
+        if not path:
+            return
+        p = Path(path)
+        if not p.is_file():
+            return
+        self._cfg.stroke_font_merge_json_path = str(p.resolve())
+        self._remap_stroke_font()
+        self.statusBar().showMessage(f"已设置合并字库：{p.name}", 5000)
+
+    def _clear_stroke_merge_json(self) -> None:
+        self._cfg.stroke_font_merge_json_path = ""
+        self._remap_stroke_font()
+        self.statusBar().showMessage("已清除合并字库", 3000)
+
+    def _use_cjk_sample_merge_font(self) -> None:
+        p = _package_data_dir() / "fonts" / "cjk_stroke_sample.json"
+        if not p.is_file():
+            QMessageBox.warning(self, "中文小样", "未找到包内 cjk_stroke_sample.json。")
+            return
+        self._cfg.stroke_font_merge_json_path = str(p.resolve())
+        self._remap_stroke_font()
+        self.statusBar().showMessage("已启用包内中文演示合并字库", 5000)
 
     def _remap_stroke_font(self) -> None:
         self._mapper = HersheyFontMapper(
             _resolve_stroke_font_path(self._cfg),
+            merge_font_path=_resolve_merge_stroke_font_path(self._cfg),
             kuixiang_mm_per_unit=self._cfg.kuixiang_mm_per_unit,
         )
         self._mapper.preload_background()
@@ -814,7 +1219,7 @@ class MainWindow(QMainWindow):
     def _current_paths(self) -> List[VectorPath]:
         idx = self._stack.currentIndex()
         if idx == 1:
-            lines = self._table_editor.to_layout_lines()
+            lines = self._table_editor.to_layout_lines(self._mm_per_px())
         elif idx == 2:
             lines = self._presentation_editor.to_layout_lines_all_slides(
                 mm_per_px_resolver=self._mm_per_px_for,
@@ -891,6 +1296,8 @@ class MainWindow(QMainWindow):
                 d0 = math.hypot(sp.x() - c_scene.x(), sp.y() - c_scene.y())
                 self._insert_resize_drag = {"d0": max(d0, 1e-6), "s0": self._insert_vector_scale}
                 self._insert_move_drag = None
+                self._preview.viewport().grabMouse()
+                event.accept()
                 return True
             bb = self._insert_overlay_bbox_scene
             if bb is not None and bb.contains(sp):
@@ -901,6 +1308,8 @@ class MainWindow(QMainWindow):
                 }
                 self._insert_resize_drag = None
                 self._preview.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+                self._preview.viewport().grabMouse()
+                event.accept()
                 return True
             return False
 
@@ -917,6 +1326,7 @@ class MainWindow(QMainWindow):
                 self._insert_scale_slider.blockSignals(False)
                 self._insert_scale_pct_lbl.setText(f"{int(round(new_s * 100))}%")
                 self._on_document_changed()
+                event.accept()
                 return True
             if self._insert_move_drag is not None:
                 sp = self._preview.mapToScene(event.position())
@@ -931,6 +1341,7 @@ class MainWindow(QMainWindow):
                 self._insert_offset_x_spin.blockSignals(False)
                 self._insert_offset_y_spin.blockSignals(False)
                 self._on_document_changed()
+                event.accept()
                 return True
             if self._insert_overlay_bbox_scene is not None:
                 hi = self._hit_insert_resize_handle(sp)
@@ -946,10 +1357,12 @@ class MainWindow(QMainWindow):
             if event.button() == Qt.MouseButton.LeftButton:
                 if self._insert_resize_drag is not None:
                     self._insert_resize_drag = None
+                    self._preview.viewport().releaseMouse()
                     return True
                 if self._insert_move_drag is not None:
                     self._insert_move_drag = None
                     self._preview.viewport().unsetCursor()
+                    self._preview.viewport().releaseMouse()
                     return True
         return False
 
@@ -1040,7 +1453,7 @@ class MainWindow(QMainWindow):
 
     def _work_paths(self) -> List[VectorPath]:
         text_paths = self._current_paths()
-        combined = list(text_paths) + self._scaled_insert_paths()
+        combined = list(text_paths) + list(self._sketch_paths) + self._scaled_insert_paths()
         ordered = order_paths_nearest_neighbor(combined)
         return transform_paths(ordered, self._cfg)
 
@@ -1048,16 +1461,17 @@ class MainWindow(QMainWindow):
         """菜单栏与绿色「文件」按钮共用，顺序贴近 WPS/Word。"""
         menu.clear()
         menu.addAction("新建", self._new_document)
-        act_open = QAction("打开…", self)
-        act_open.setEnabled(False)
-        act_open.setStatusTip("写字机文档打开/保存后续提供；当前可编辑后直接「生成 G-code」。")
-        menu.addAction(act_open)
+        menu.addAction("打开工程…", self._open_project)
         menu.addSeparator()
         m_ins = menu.addMenu("插入")
         self._populate_insert_vector_menu(m_ins)
         menu.addSeparator()
+        menu.addAction("保存工程", self._save_project)
+        menu.addAction("另存工程为…", self._save_project_as)
+        menu.addSeparator()
         menu.addAction("保存配置…", self._save_config)
         menu.addAction("生成 G-code…", self._show_gcode)
+        menu.addAction("导出 G-code 到文件…", self._export_gcode_to_file)
         menu.addSeparator()
         menu.addAction("退出", self.close)
 
@@ -1069,6 +1483,18 @@ class MainWindow(QMainWindow):
             return self._presentation_editor.slide_editor()
         return None
 
+    def _insert_math_symbol(self, ch: str) -> None:
+        from inkscape_wps.ui.math_symbols import insert_unicode_at_caret
+
+        te = self._active_rich_text_edit()
+        if te is None:
+            QMessageBox.information(self, "符号", "请切换到「文字」或「演示」页后再插入符号。")
+            return
+        if not insert_unicode_at_caret(te, ch):
+            QMessageBox.warning(self, "符号", "当前编辑器不支持插入。")
+            return
+        self._on_document_changed()
+
     def _sync_text_document_margins(self) -> None:
         """正文边距（px）与 MachineConfig.document_margin_mm、纸宽对齐，贴近 WPS 页边距观感。"""
         pw = float(self._cfg.page_width_mm)
@@ -1078,21 +1504,33 @@ class MainWindow(QMainWindow):
         self._presentation_editor.set_slide_document_margin_px(mpx)
 
     def _install_editor_shortcuts(self) -> None:
+        """StandardKey 在 macOS 上映为 Cmd，在 Windows 上为 Ctrl。"""
         ctx = Qt.ShortcutContext.WidgetWithChildrenShortcut
         parent = self._stack
+        sk = QKeySequence.StandardKey
 
         def _bind(key, slot) -> None:
             sc = QShortcut(QKeySequence(key), parent)
             sc.setContext(ctx)
             sc.activated.connect(slot)
 
-        _bind(QKeySequence.StandardKey.Bold, self._toggle_bold)
-        _bind(QKeySequence.StandardKey.Italic, self._toggle_italic)
-        _bind(QKeySequence.StandardKey.Underline, self._toggle_underline)
-        _bind("Ctrl+L", lambda: self._set_alignment(Qt.AlignmentFlag.AlignLeft))
-        _bind("Ctrl+E", lambda: self._set_alignment(Qt.AlignmentFlag.AlignCenter))
-        _bind("Ctrl+R", lambda: self._set_alignment(Qt.AlignmentFlag.AlignRight))
-        _bind("Ctrl+J", lambda: self._set_alignment(Qt.AlignmentFlag.AlignJustify))
+        _bind(sk.Bold, self._toggle_bold)
+        _bind(sk.Italic, self._toggle_italic)
+        _bind(sk.Underline, self._toggle_underline)
+        align_std = [
+            ("AlignLeft", Qt.AlignmentFlag.AlignLeft),
+            ("AlignCenter", Qt.AlignmentFlag.AlignCenter),
+            ("AlignRight", Qt.AlignmentFlag.AlignRight),
+        ]
+        for name, al in align_std:
+            std = getattr(sk, name, None)
+            if std is not None:
+                _bind(std, lambda a=al: self._set_alignment(a))
+        justify_std = getattr(sk, "AlignJustify", None)
+        if justify_std is not None:
+            _bind(justify_std, lambda: self._set_alignment(Qt.AlignmentFlag.AlignJustify))
+        else:
+            _bind("Ctrl+J", lambda: self._set_alignment(Qt.AlignmentFlag.AlignJustify))
 
     def _center_insert_vector_on_page(self, *, announce: bool = True) -> None:
         if not self._insert_paths_base:
@@ -1131,6 +1569,7 @@ class MainWindow(QMainWindow):
         menu.addAction("从图片导入矢量…", self._insert_bitmap_traced)
         menu.addSeparator()
         menu.addAction("清除已插入内容", self._clear_inserted_vectors)
+        menu.addAction("清除手绘路径", self._clear_sketch_paths)
 
     def _insert_svg_paths_from_file(self, path: Path) -> None:
         try:
@@ -1230,6 +1669,10 @@ class MainWindow(QMainWindow):
             self._preview.scale(self._preview_zoom, self._preview_zoom)
 
     def _on_document_changed(self) -> None:
+        # 初始化阶段 _build_ui 尚未创建预览/状态栏控件时，这里会被 _apply_font_size() 间接调用；
+        # 直接返回，待 __init__ 末尾再由 _on_document_changed() 统一刷新。
+        if not hasattr(self, "_preview") or not hasattr(self, "_st_cursor"):
+            return
         paths = self._work_paths()
         mpp = self._mm_per_px()
         scene, _ = self._view_model.paths_to_scene_items(paths, mm_per_px=mpp)
@@ -1244,9 +1687,17 @@ class MainWindow(QMainWindow):
         self._sync_text_document_margins()
         self._apply_preview_transform()
 
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._ask_save_if_dirty("退出", "内容已修改，是否在退出前保存工程？"):
+            event.accept()
+        else:
+            event.ignore()
+
     def _apply_font_family(self, font: QFont) -> None:
-        te = self._active_rich_text_edit()
         fam = font.family()
+        if self._stack.currentIndex() == 1:
+            self._table_editor.merge_font_family_current_cell(fam)
+        te = self._active_rich_text_edit()
         if te is not None:
             c = te.textCursor()
             fmt = QTextCharFormat()
@@ -1262,6 +1713,8 @@ class MainWindow(QMainWindow):
         self._on_document_changed()
 
     def _apply_font_size(self, sz: int) -> None:
+        if self._stack.currentIndex() == 1:
+            self._table_editor.merge_font_point_size_current_cell(float(sz))
         te = self._active_rich_text_edit()
         if te is not None:
             c = te.textCursor()
@@ -1278,6 +1731,10 @@ class MainWindow(QMainWindow):
         self._on_document_changed()
 
     def _toggle_bold(self) -> None:
+        if self._stack.currentIndex() == 1:
+            self._table_editor.apply_bold_current_cell()
+            self._on_document_changed()
+            return
         te = self._active_rich_text_edit()
         if te is None:
             return
@@ -1290,6 +1747,10 @@ class MainWindow(QMainWindow):
         self._on_document_changed()
 
     def _toggle_italic(self) -> None:
+        if self._stack.currentIndex() == 1:
+            self._table_editor.apply_italic_current_cell()
+            self._on_document_changed()
+            return
         te = self._active_rich_text_edit()
         if te is None:
             return
@@ -1301,6 +1762,10 @@ class MainWindow(QMainWindow):
         self._on_document_changed()
 
     def _toggle_underline(self) -> None:
+        if self._stack.currentIndex() == 1:
+            self._table_editor.apply_underline_current_cell()
+            self._on_document_changed()
+            return
         te = self._active_rich_text_edit()
         if te is None:
             return
@@ -1316,6 +1781,10 @@ class MainWindow(QMainWindow):
         self._on_document_changed()
 
     def _set_alignment(self, al: Qt.AlignmentFlag) -> None:
+        if self._stack.currentIndex() == 1:
+            self._table_editor.set_alignment_current_cell(al)
+            self._on_document_changed()
+            return
         te = self._active_rich_text_edit()
         if te is None:
             return
@@ -1342,12 +1811,41 @@ class MainWindow(QMainWindow):
         self._cfg.coord_offset_x_mm = self._off_x.value()
         self._cfg.coord_offset_y_mm = self._off_y.value()
 
+    def _apply_pen_mode_widgets(self) -> None:
+        pm = (self._cfg.gcode_pen_mode or "z").strip().lower()
+        use_m3 = pm in ("m3m5", "m3", "spindle")
+        self._pen_mode_combo.blockSignals(True)
+        self._pen_mode_combo.setCurrentIndex(1 if use_m3 else 0)
+        self._pen_mode_combo.blockSignals(False)
+        self._m3_s_spin.blockSignals(True)
+        self._m3_s_spin.setValue(max(0, min(10000, int(self._cfg.gcode_m3_s_value))))
+        self._m3_s_spin.blockSignals(False)
+        self._update_z_widgets_enabled()
+
+    def _on_pen_mode_ui_changed(self, _index: int = 0) -> None:
+        self._sync_cfg_widgets()
+        self._update_z_widgets_enabled()
+
+    def _update_z_widgets_enabled(self) -> None:
+        data = self._pen_mode_combo.currentData()
+        use_z = str(data) == "z" or data is None
+        self._z_up.setEnabled(use_z)
+        self._z_down.setEnabled(use_z)
+        self._m3_s_spin.setEnabled(not use_z)
+
     def _sync_cfg_widgets(self) -> None:
         self._sync_coord_from_widgets()
         self._cfg.z_up_mm = self._z_up.value()
         self._cfg.z_down_mm = self._z_down.value()
         self._cfg.grbl_streaming = self._cb_stream.isChecked()
         self._cfg.grbl_rx_buffer_size = int(self._rx_buf_spin.value())
+        dm = self._pen_mode_combo.currentData()
+        self._cfg.gcode_pen_mode = str(dm) if dm is not None else "z"
+        self._cfg.gcode_m3_s_value = int(self._m3_s_spin.value())
+        self._cfg.gcode_program_prefix = self._gcode_prefix_edit.toPlainText()
+        self._cfg.gcode_program_suffix = self._gcode_suffix_edit.toPlainText()
+        self._cfg.gcode_use_g92 = self._cb_gcode_g92.isChecked()
+        self._cfg.gcode_end_m30 = self._cb_gcode_m30.isChecked()
 
     def _on_coord_changed(self) -> None:
         self._sync_coord_from_widgets()
@@ -1362,6 +1860,132 @@ class MainWindow(QMainWindow):
         self._cfg.serial_show_bluetooth_only = bool(checked)
         self._refresh_ports()
 
+    def _write_project_to_path(self, path: Path) -> None:
+        iv = None
+        if self._insert_paths_base:
+            iv = {
+                "paths": serialize_vector_paths(self._insert_paths_base),
+                "scale": self._insert_vector_scale,
+                "dx_mm": self._insert_vector_dx_mm,
+                "dy_mm": self._insert_vector_dy_mm,
+            }
+        sk_blob: dict = {}
+        if self._sketch_paths:
+            sk_blob = {"paths": serialize_vector_paths(self._sketch_paths)}
+        save_project_file(
+            path,
+            title=self._doc_title,
+            word_html=self._editor.toHtml(),
+            table_blob=self._table_editor.to_project_blob(),
+            slides=self._presentation_editor.slides_storage(),
+            sketch_blob=sk_blob,
+            insert_vector=iv,
+        )
+
+    def _save_project(self) -> bool:
+        if self._project_path is None:
+            return self._save_project_as()
+        try:
+            self._write_project_to_path(self._project_path)
+        except OSError as e:
+            QMessageBox.warning(self, "保存工程", str(e))
+            return False
+        self._mark_saved_state()
+        self.statusBar().showMessage(f"已保存工程 {self._project_path.name}", 3000)
+        return True
+
+    def _save_project_as(self) -> bool:
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "另存工程为",
+            str(Path.home()),
+            "inkscape-wps 工程 (*.inkwps.json);;JSON (*.json);;所有文件 (*)",
+        )
+        if not path:
+            return False
+        p = Path(path)
+        try:
+            self._write_project_to_path(p)
+        except OSError as e:
+            QMessageBox.warning(self, "保存工程", str(e))
+            return False
+        self._project_path = p
+        self._doc_title = p.stem
+        self._sync_doc_title_label()
+        self._mark_saved_state()
+        self._update_window_title()
+        self.statusBar().showMessage(f"已保存工程 {p.name}", 3000)
+        return True
+
+    def _open_project(self) -> None:
+        if not self._ask_save_if_dirty("打开工程", "当前内容已修改，是否保存工程？"):
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "打开工程",
+            str(Path.home()),
+            "工程 (*.inkwps.json *.json);;所有文件 (*)",
+        )
+        if not path:
+            return
+        try:
+            d = load_project_file(Path(path))
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            QMessageBox.warning(self, "打开工程", str(e))
+            return
+        self._apply_loaded_project(d)
+        self._project_path = Path(path)
+        t = d.get("title")
+        if isinstance(t, str) and t.strip():
+            self._doc_title = t.strip()
+        else:
+            self._doc_title = Path(path).stem
+        self._sync_doc_title_label()
+        self._update_window_title()
+        self._on_document_changed()
+        self.statusBar().showMessage(f"已打开工程 {Path(path).name}", 3000)
+
+    def _apply_loaded_project(self, d: dict) -> None:
+        self._nonword_undo_restoring = True
+        try:
+            self._editor.setHtml(str(d.get("word_html", "")))
+            tbl = d.get("table")
+            if isinstance(tbl, dict):
+                self._table_editor.from_project_blob(tbl)
+            slides = d.get("slides")
+            if not isinstance(slides, list):
+                slides = [""]
+            self._presentation_editor.load_slides([str(s) if s is not None else "" for s in slides])
+            self._sketch_paths.clear()
+            sk = d.get("sketch")
+            if isinstance(sk, dict) and sk.get("paths"):
+                try:
+                    self._sketch_paths.extend(deserialize_vector_paths(sk["paths"]))
+                except (TypeError, ValueError):
+                    pass
+            self._insert_paths_base.clear()
+            self._insert_vector_scale = 1.0
+            self._insert_vector_dx_mm = 0.0
+            self._insert_vector_dy_mm = 0.0
+            self._insert_resize_drag = None
+            self._insert_move_drag = None
+            iv = d.get("insert_vector")
+            if isinstance(iv, dict) and iv.get("paths"):
+                try:
+                    vps = deserialize_vector_paths(iv["paths"])
+                    self._insert_paths_base.extend(vps)
+                    self._insert_vector_scale = float(iv.get("scale", 1.0))
+                    self._insert_vector_dx_mm = float(iv.get("dx_mm", 0.0))
+                    self._insert_vector_dy_mm = float(iv.get("dy_mm", 0.0))
+                    self._recompute_insert_pivot()
+                except (TypeError, ValueError):
+                    pass
+            self._editor.document().setModified(False)
+            self._nonword_modified = False
+        finally:
+            self._nonword_undo_restoring = False
+        self._reset_nonword_undo_anchor()
+
     def _save_config(self) -> None:
         self._sync_cfg_widgets()
         self._cfg.serial_show_bluetooth_only = self._cb_bt_only.isChecked()
@@ -1375,9 +1999,27 @@ class MainWindow(QMainWindow):
         g = paths_to_gcode(self._work_paths(), self._cfg, order=False)
         dlg = QMessageBox(self)
         dlg.setWindowTitle("G-code")
-        dlg.setText("当前程序（可复制）")
+        dlg.setText("当前程序（可复制）；亦可「导出 G-code 到文件」。")
         dlg.setDetailedText(g)
         dlg.exec()
+
+    def _export_gcode_to_file(self) -> None:
+        self._sync_cfg_widgets()
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出 G-code",
+            str(Path.home() / "output.nc"),
+            "G-code (*.nc *.gcode *.tap *.txt);;所有文件 (*)",
+        )
+        if not path:
+            return
+        g = paths_to_gcode(self._work_paths(), self._cfg, order=False)
+        try:
+            write_text_atomic(Path(path), g)
+        except OSError as e:
+            QMessageBox.warning(self, "导出 G-code", str(e))
+            return
+        self.statusBar().showMessage(f"已导出 {Path(path).name}", 4000)
 
     def _log_append(self, s: str) -> None:
         self._log.appendPlainText(s)

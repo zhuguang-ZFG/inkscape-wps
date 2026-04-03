@@ -1,10 +1,18 @@
 """G-code 生成：纯数学与字符串，无 Qt。
 
-与 grblapp `gcode.py::_generate_kuixiang` 一致的核心序列：
-- 可选 **G92 X0 Y0 Z0**：将当前机位设为程序零点（用户需在正确位置再运行）。
-- **G21 G90 G94**，默认 XY 进给 F；连续两次 **G1 抬笔 Z**。
-- 每笔：**G1 抬笔 Z** → **G0** 到起点 → **G1 落笔 Z** → **G1** 连到后续点（不重复首点）。
-- 结尾：**G1 抬笔** → **G0 X0 Y0** → **M5**（笔）→ **M2**（不换纸）或 **M30**（换纸任务，见配置）。
+与 grblapp `src/grbl_writer/core/gcode.py::_generate_kuixiang` 对齐的核心笔序：
+- **G21 G90**，XY 进给 F；抬笔/落笔用 **G1 Z**（或 M3/M5 笔模式）；每笔 **G0 到起点 → 落笔 → G1 连到后续点**（不重复首点）。
+- 程序头尾可插 **前缀/后缀**、可选 **G92**、结尾 **G0 X0 Y0** 与 **M2/M30**。
+
+与 grblapp 的差异摘要（便于对照现场能写字的固件习惯）：
+- **G92**：grblapp 奎享模式固定写 `G92 X0 Y0 Z0`；本仓库由 `MachineConfig.gcode_use_g92` 控制，可关闭。
+- **G94**：本仓库显式发 `G94`；grblapp 奎享片段里未单独强调（依赖固件默认）。
+- **行格式**：grblapp 常用紧凑行如 `G1G90 Z…F…`、`G0 X…Y…F…`；本仓库用带空格的标准写法；语义等价，部分解析器对 G0+F 的容忍度不同。
+- **结尾 M5**：本仓库在 **M2/M30 前固定发 M5**（伺服笔/主轴语义）；grblapp 奎享模式 **不发 M5**，纯 Z 抬落笔。若固件把 M5 当激光关断，一般无害；若固件异常响应 M5，可改为可配置关闭。
+- **笔画顺序**：grblapp 按 **字符 → 笔画** 顺序生成，并在 `path_optimizer` 内做字符内/间优化；本仓库对 `VectorPath` 列表可做 **全局最近邻**（`order_paths_nearest_neighbor`），顺序可能与「按字阅读顺序」不同。
+- **坐标变换**：grblapp 在出 G-code 前经 `coordinate_transform.transform_characters`（原点模式、翻转、旋转等）；本仓库在 UI/核心侧用 `MachineConfig` 坐标字段在路径阶段变换，需保证与对零方式一致。
+
+参考仓库路径（本地克隆）：`…/grblapp/src/grbl_writer/core/gcode.py`。
 """
 
 from __future__ import annotations
@@ -102,16 +110,16 @@ def paths_to_gcode(
         if use_m3m5:
             lines.append("M5")
         else:
-            lines.append(f"G1 Z{z_up:.3f} F{f_z:.0f}")
+            lines.append(f"G1 Z{z_up:.4f} F{f_z:.0f}")
         if pen_is_down and cfg.dwell_after_pen_up_s > 0:
             lines.append(f"G4 P{cfg.dwell_after_pen_up_s:.3f}")
         pen_is_down = False
 
     def rapid(x: float, y: float) -> None:
-        lines.append(f"G0 X{x:.3f} Y{y:.3f}")
+        lines.append(f"G0 X{x:.4f} Y{y:.4f}")
 
     def line_to(x: float, y: float) -> None:
-        lines.append(f"G1 X{x:.3f} Y{y:.3f} F{f_xy:.0f}")
+        lines.append(f"G1 X{x:.4f} Y{y:.4f} F{f_xy:.0f}")
 
     def pen_down() -> None:
         nonlocal pen_is_down
@@ -119,12 +127,11 @@ def paths_to_gcode(
             s = max(0, int(cfg.gcode_m3_s_value))
             lines.append(f"M3 S{s}")
         else:
-            lines.append(f"G1 Z{z_down:.3f} F{f_z:.0f}")
+            lines.append(f"G1 Z{z_down:.4f} F{f_z:.0f}")
         if cfg.dwell_after_pen_down_s > 0:
             lines.append(f"G4 P{cfg.dwell_after_pen_down_s:.3f}")
         pen_is_down = True
 
-    travel_z()
     travel_z()
 
     for vp in work:
@@ -138,7 +145,7 @@ def paths_to_gcode(
         if cfg.rapid_after_pen_up:
             rapid(pts[0].x, pts[0].y)
         else:
-            lines.append(f"G1 X{pts[0].x:.3f} Y{pts[0].y:.3f} F{f_xy:.0f}")
+            lines.append(f"G1 X{pts[0].x:.4f} Y{pts[0].y:.4f} F{f_xy:.0f}")
 
         pen_down()
         for q in pts[1:]:

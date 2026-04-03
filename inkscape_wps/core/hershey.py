@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
@@ -11,6 +12,8 @@ from .hershey_glyphs_builtin import build_builtin_glyphs
 from .hershey_jhf import jhf_to_char_glyphs
 from .kuixiang_font import is_kuixiang_gfont_extract_payload, load_kuixiang_json_as_em_glyphs
 from .types import Point, VectorPath
+
+_log = logging.getLogger(__name__)
 
 # 内置字形坐标系的大致字高（用于与 TrueType 视觉对齐的比例基准）
 BUILTIN_EM_HEIGHT_UNITS = 10.0
@@ -30,6 +33,7 @@ class HersheyFontMapper:
         self,
         font_path: Path | None = None,
         *,
+        merge_font_path: Path | str | None = None,
         kuixiang_mm_per_unit: float = 0.01530,
     ) -> None:
         self._kuixiang_mm_per_unit = float(kuixiang_mm_per_unit)
@@ -39,27 +43,36 @@ class HersheyFontMapper:
         self._em_height = BUILTIN_EM_HEIGHT_UNITS
         self._lazy_json_path: Path | None = None
         self._lazy_json_loaded = False
+        self._lazy_merge_path: Path | None = None
+        self._lazy_merge_loaded = False
+        self._pending_small_merge: Path | None = None
 
         self._load_builtin_as_dict()
 
-        if font_path is None or not font_path.is_file():
-            return
+        if font_path is not None and font_path.is_file():
+            suf = font_path.suffix.lower()
+            if suf in (".jhf", ".hf"):
+                self._load_jhf(font_path)
+            elif suf == ".json":
+                try:
+                    big = font_path.stat().st_size >= LAZY_JSON_BYTES
+                except OSError:
+                    big = False
+                if big:
+                    self._lazy_json_path = font_path
+                else:
+                    self._apply_json_file(font_path)
+            # 未知扩展名：保持内置
 
-        suf = font_path.suffix.lower()
-        if suf in (".jhf", ".hf"):
-            self._load_jhf(font_path)
-            return
-        if suf == ".json":
-            try:
-                big = font_path.stat().st_size >= LAZY_JSON_BYTES
-            except OSError:
-                big = False
-            if big:
-                self._lazy_json_path = font_path
-            else:
-                self._apply_json_file(font_path)
-            return
-        # 未知扩展名：保持内置
+        mp = None
+        if merge_font_path is not None and str(merge_font_path).strip():
+            mp = Path(merge_font_path).expanduser()
+        if mp is not None and mp.is_file():
+            self._attach_merge_path(mp)
+
+    def set_kuixiang_mm_per_unit(self, value: float) -> None:
+        """更新奎享 JSON 解析时的 font 单位→毫米系数。已载入内存的奎享字形不会自动重算，需重开字库或重启应用。"""
+        self._kuixiang_mm_per_unit = float(value)
 
     def _load_builtin_as_dict(self) -> None:
         built = build_builtin_glyphs()
@@ -68,7 +81,14 @@ class HersheyFontMapper:
         self._em_height = BUILTIN_EM_HEIGHT_UNITS
 
     def _apply_json_file(self, path: Path) -> None:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except OSError as e:
+            _log.error("读取字库文件失败：%s (%s)", path, e)
+            raise
+        except json.JSONDecodeError as e:
+            _log.error("字库 JSON 解析失败：%s (%s)", path, e)
+            raise
         self._apply_json_payload(raw, path_hint=path)
 
     def _apply_json_payload(self, raw: dict, *, path_hint: Path | None = None) -> None:
@@ -91,15 +111,59 @@ class HersheyFontMapper:
             merged[str(k)] = v
         self._glyphs = merged
 
-    def _ensure_lazy_json(self) -> None:
-        path = self._lazy_json_path
-        if path is None or self._lazy_json_loaded:
+    def _attach_merge_path(self, mp: Path) -> None:
+        try:
+            big = mp.stat().st_size >= LAZY_JSON_BYTES
+        except OSError:
             return
+        suf = mp.suffix.lower()
+        if suf not in (".json",):
+            return
+        if big:
+            self._lazy_merge_path = mp
+            return
+        if self._lazy_json_path is not None and not self._lazy_json_loaded:
+            self._pending_small_merge = mp
+        else:
+            self._merge_json_file(mp)
+
+    def _merge_json_file(self, path: Path) -> None:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except OSError as e:
+            _log.error("读取合并字库失败：%s (%s)", path, e)
+            raise
+        except json.JSONDecodeError as e:
+            _log.error("合并字库 JSON 无效：%s (%s)", path, e)
+            raise
+        if not isinstance(raw, dict):
+            return
+        if is_kuixiang_gfont_extract_payload(raw):
+            extra = load_kuixiang_json_as_em_glyphs(
+                raw,
+                mm_per_unit=self._kuixiang_mm_per_unit,
+                target_em=BUILTIN_EM_HEIGHT_UNITS,
+            )
+            for ch, polys in extra.items():
+                self._glyphs[ch] = [list(p) for p in polys]
+            return
+        glyphs = raw.get("glyphs", {})
+        if not isinstance(glyphs, dict):
+            return
+        for k, v in glyphs.items():
+            self._glyphs[str(k)] = v
+
+    def _ensure_lazy_json(self) -> None:
         with self._lock:
-            if self._lazy_json_loaded:
-                return
-            self._apply_json_file(path)
-            self._lazy_json_loaded = True
+            if self._lazy_json_path is not None and not self._lazy_json_loaded:
+                self._apply_json_file(self._lazy_json_path)
+                self._lazy_json_loaded = True
+            if self._pending_small_merge is not None:
+                self._merge_json_file(self._pending_small_merge)
+                self._pending_small_merge = None
+            if self._lazy_merge_path is not None and not self._lazy_merge_loaded:
+                self._merge_json_file(self._lazy_merge_path)
+                self._lazy_merge_loaded = True
 
     def preload_background(self) -> None:
         """在后台线程加载延迟 JSON，缩短首次排版等待（守护线程）。"""
@@ -115,7 +179,8 @@ class HersheyFontMapper:
         merged = {k: [list(poly) for poly in v] for k, v in self._builtin.items()}
         try:
             glyphs, em = jhf_to_char_glyphs(path, em_height=BUILTIN_EM_HEIGHT_UNITS)
-        except OSError:
+        except OSError as e:
+            _log.warning("加载 JHF 失败，保留内置字形：%s (%s)", path, e)
             return
         if not glyphs:
             return
@@ -141,6 +206,67 @@ class HersheyFontMapper:
         if ch.upper() in self._glyphs:
             return self._glyphs[ch.upper()]
         return self._glyphs.get(" ", [])
+
+    def estimate_advances(
+        self,
+        text: str,
+        font_size_pt: float,
+        *,
+        mm_per_pt: float = 1.0,
+        reference_ascent_pt: float | None = None,
+    ) -> List[float]:
+        """估算每个字符的前进宽度（与 map_line 使用同一比例体系）。"""
+        adv, _asc, _desc = self.estimate_advances_and_vertical_metrics(
+            text,
+            font_size_pt,
+            mm_per_pt=mm_per_pt,
+            reference_ascent_pt=reference_ascent_pt,
+        )
+        return adv
+
+    def estimate_advances_and_vertical_metrics(
+        self,
+        text: str,
+        font_size_pt: float,
+        *,
+        mm_per_pt: float = 1.0,
+        reference_ascent_pt: float | None = None,
+    ) -> Tuple[List[float], float, float]:
+        """估算每字符宽度，以及文本对应的上伸/下伸量（相对基线，单位与 map_line 一致）。"""
+        self._ensure_lazy_json()
+        if self._em_height <= 0:
+            return [font_size_pt * 0.6 for _ in text], font_size_pt * 0.8, font_size_pt * 0.2
+        unit = self._scale_mm_per_pt(font_size_pt, reference_ascent_pt)
+        scale = unit * mm_per_pt * (font_size_pt / self._em_height)
+        fallback = (6.5 / BUILTIN_EM_HEIGHT_UNITS) * font_size_pt * mm_per_pt * unit
+        out: List[float] = []
+        min_y: float | None = None
+        max_y: float | None = None
+        for ch in text:
+            polys = self._glyph_for_char(ch)
+            if not polys:
+                out.append(fallback * 0.6)
+                continue
+            min_x: float | None = None
+            max_x: float | None = None
+            for poly in polys:
+                for px, py in poly:
+                    min_x = px if min_x is None else min(min_x, px)
+                    max_x = px if max_x is None else max(max_x, px)
+                    min_y = py if min_y is None else min(min_y, py)
+                    max_y = py if max_y is None else max(max_y, py)
+            if min_x is None or max_x is None:
+                out.append(fallback)
+                continue
+            w = max(1.0, (max_x - min_x) + 1.2) * scale
+            out.append(max(0.5, w))
+        if min_y is None or max_y is None:
+            ascent = font_size_pt * 0.82
+            descent = font_size_pt * 0.18
+        else:
+            ascent = max(1.0, max_y * scale)
+            descent = max(1.0, -min_y * scale if min_y < 0 else 0.22 * font_size_pt)
+        return out, ascent, descent
 
     def map_line(
         self,

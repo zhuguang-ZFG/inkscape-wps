@@ -46,10 +46,11 @@ class RibbonGroup(QFrame):
         super().__init__(parent)
         self.setObjectName("RibbonGroup")
         self._row = QHBoxLayout()
-        self._row.setContentsMargins(8, 8, 8, 4)
-        self._row.setSpacing(8)
+        # WPS Ribbon 更紧凑：减少内边距与组高度
+        self._row.setContentsMargins(6, 4, 6, 2)
+        self._row.setSpacing(6)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(4, 4, 4, 2)
+        outer.setContentsMargins(2, 2, 2, 0)
         outer.setSpacing(0)
         outer.addLayout(self._row)
         t = QLabel(title)
@@ -77,7 +78,7 @@ class WpsRibbon(QWidget):
         root.setSpacing(0)
 
         self._tab_bar = QWidget()
-        self._tab_bar.setStyleSheet("background-color: #f3f3f3;")
+        self._tab_bar.setObjectName("WpsRibbonTabBar")
         tab_lay = QHBoxLayout(self._tab_bar)
         tab_lay.setContentsMargins(8, 4, 8, 0)
         tab_lay.setSpacing(2)

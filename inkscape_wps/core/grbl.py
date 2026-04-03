@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import deque
@@ -9,6 +10,8 @@ from queue import Empty, Queue
 from typing import Callable, Deque, Dict, List, Optional, Protocol, Tuple
 
 from .grbl_protocol import GrblProtocolParser, ParsedMessage
+
+_log = logging.getLogger(__name__)
 
 
 class SerialLike(Protocol):
@@ -182,6 +185,7 @@ class GrblController:
                 try:
                     raw = self._s.readline()
                 except Exception:
+                    _log.debug("GRBL 读线程 readline 异常，退出循环", exc_info=True)
                     break
                 if not raw:
                     time.sleep(0.005)
@@ -211,6 +215,11 @@ class GrblController:
 
     def stop_reader(self) -> None:
         self._reader_alive = False
+        th = self._reader_thread
+        if th is not None and th.is_alive():
+            th.join(timeout=2.5)
+            if th.is_alive():
+                _log.warning("GRBL 读线程在 %.1fs 内未结束，可能仍占用串口读端", 2.5)
 
     def clear_response_queue(self) -> None:
         while True:
@@ -280,8 +289,17 @@ class GrblController:
                 cost = len(raw)
                 # 超长单行无法与「预算内拼包」；先排空已排队再单独发，避免 buf_used 逻辑死锁
                 if cost > cap:
+                    # 为排空队列设总超时，避免 pending 与固件应答长期不一致时无限阻塞
+                    n_pending0 = len(pending)
+                    drain_deadline = time.monotonic() + to * max(1, n_pending0) + to
                     while pending:
-                        self.wait_ok(timeout_s=to)
+                        if time.monotonic() > drain_deadline:
+                            raise GrblSendError(
+                                f"流式发送：排空待确认队列超时（仍余 {len(pending)} 条未收到 ok），"
+                                "请检查串口连接、增大 grbl_line_timeout_s，或缩短单行 G-code / 增大 RX 预算。"
+                            )
+                        remain = drain_deadline - time.monotonic()
+                        self.wait_ok(timeout_s=min(to, max(0.05, remain)))
                         buf_used -= pending.popleft()
                         ok_count += 1
                     with self._send_lock:
