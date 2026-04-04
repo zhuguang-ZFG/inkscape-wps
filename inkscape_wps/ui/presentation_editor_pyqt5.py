@@ -23,7 +23,12 @@ from PyQt5.QtWidgets import (
 )
 
 from inkscape_wps.core.config import MachineConfig
-from inkscape_wps.ui.document_bridge_pyqt5 import LayoutLine, apply_default_tab_stops, text_edit_to_layout_lines
+from inkscape_wps.ui.document_bridge_pyqt5 import (
+    LayoutLine,
+    apply_default_tab_stops,
+    document_plain_text_skip_strike,
+    text_edit_to_layout_lines,
+)
 
 
 def _slide_plain_preview(stored: str, max_len: int = 18) -> str:
@@ -344,7 +349,7 @@ class WpsPresentationEditorPyQt5(QWidget):
             elif stored.lstrip().startswith("<"):
                 doc = QTextDocument()
                 doc.setHtml(stored)
-                base = doc.toPlainText()
+                base = document_plain_text_skip_strike(doc)
             else:
                 base = str(stored)
             parts: List[str] = []

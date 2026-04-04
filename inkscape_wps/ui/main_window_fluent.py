@@ -23,6 +23,7 @@ from PyQt5.QtGui import (
     QDesktopServices,
     QFont,
     QIcon,
+    QKeyEvent,
     QKeySequence,
     QMouseEvent,
     QPainter,
@@ -96,6 +97,7 @@ from inkscape_wps.core.project_io import load_project_file, save_project_file, w
 from inkscape_wps.core.project_io import deserialize_vector_paths, serialize_vector_paths
 from inkscape_wps.core.types import Point, VectorPath, paths_bounding_box
 from inkscape_wps.ui.document_bridge_pyqt5 import (
+    _char_format_at_doc_pos,
     apply_default_tab_stops,
     stroke_editor_to_layout_lines,
     text_edit_to_layout_lines,
@@ -178,6 +180,8 @@ class MainWindowFluent(FluentWindow):
         self._nonword_undo_anchor: tuple[str, str, str, str] = ("", "", "", "")
         self._nonword_undo_restoring = False
         self._shown_word_mode_tip = False
+        # P4-C-3：演示页修订模式（删除键加删除线，不物理删除；LayoutLine/G-code 忽略删除线字符）
+        self._slide_revision_mode = False
 
         self._build_pages()
         # P1-5：页边距与三边编辑区（尤其演示页 QTextEdit）同步，避免预览/G-code 与屏显偏移。
@@ -244,7 +248,14 @@ class MainWindowFluent(FluentWindow):
         self._presentation_editor.set_slide_document_margin_px(m_px)
 
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001, N802
-        """演示页编辑器获得焦点时刷新「撤销/重做」菜单状态（文档栈 vs 整页栈）。"""
+        """演示页：修订模式下拦截 Backspace/Delete；获得焦点时刷新撤销/重做菜单状态。"""
+        if obj is self._presentation_editor.slide_editor() and event.type() == QEvent.KeyPress:
+            if self._slide_revision_mode and isinstance(event, QKeyEvent):
+                try:
+                    if self._slide_revision_handle_delete(event):
+                        return True
+                except Exception:
+                    _logger.debug("演示修订模式处理按键失败", exc_info=True)
         if event.type() == QEvent.FocusIn and obj is self._presentation_editor.slide_editor():
             QTimer.singleShot(0, self._refresh_undo_redo_menu_state)
         try:
@@ -3177,6 +3188,102 @@ class MainWindowFluent(FluentWindow):
         te.setTextCursor(cur)
         self._refresh_preview()
 
+    def _slide_revision_handle_delete(self, ke: QKeyEvent) -> bool:
+        """修订开启时：Backspace/Delete 改为给字符加删除线。返回 True 表示已消费事件。"""
+        if int(ke.modifiers()) & (
+            int(Qt.ControlModifier) | int(Qt.AltModifier) | int(Qt.MetaModifier)
+        ):
+            return False
+        key = int(ke.key())
+        if key not in (int(Qt.Key_Backspace), int(Qt.Key_Delete)):
+            return False
+        te = self._presentation_editor.slide_editor()
+        cur = te.textCursor()
+        strike = QTextCharFormat()
+        strike.setFontStrikeOut(True)
+
+        if cur.hasSelection():
+            cur.mergeCharFormat(strike)
+            cur.clearSelection()
+            te.setTextCursor(cur)
+            self._refresh_preview()
+            return True
+
+        if key == int(Qt.Key_Backspace):
+            p = cur.position()
+            if p <= cur.block().position():
+                return False
+            cur.setPosition(p - 1)
+            cur.setPosition(p, QTextCursor.KeepAnchor)
+        else:
+            p = cur.position()
+            if cur.atBlockEnd():
+                return False
+            cur.setPosition(p)
+            cur.setPosition(p + 1, QTextCursor.KeepAnchor)
+
+        cur.mergeCharFormat(strike)
+        cur.clearSelection()
+        if key == int(Qt.Key_Backspace):
+            cur.setPosition(p)
+        else:
+            cur.setPosition(p + 1)
+        te.setTextCursor(cur)
+        self._refresh_preview()
+        return True
+
+    def _slide_revision_accept(self, *, selection_only: bool) -> None:
+        """接受修订：移除带删除线的字符（从文档中删除）。"""
+        te = self._presentation_editor.slide_editor()
+        doc = te.document()
+        cur0 = te.textCursor()
+        if selection_only and cur0.hasSelection():
+            a = min(cur0.anchor(), cur0.position())
+            b = max(cur0.anchor(), cur0.position())
+        else:
+            a, b = 0, doc.characterCount()
+        to_del: List[int] = []
+        for pos in range(a, b):
+            if doc.characterAt(pos) == "\u0000":
+                break
+            if _char_format_at_doc_pos(doc, pos).fontStrikeOut():
+                to_del.append(pos)
+        cur = QTextCursor(doc)
+        cur.beginEditBlock()
+        for pos in reversed(to_del):
+            cur.setPosition(pos)
+            cur.setPosition(pos + 1, QTextCursor.KeepAnchor)
+            cur.removeSelectedText()
+        cur.endEditBlock()
+        te.setTextCursor(cur0)
+        self._refresh_preview()
+
+    def _slide_revision_reject(self, *, selection_only: bool) -> None:
+        """拒绝修订：去掉选区或全文内的删除线，保留字符。"""
+        te = self._presentation_editor.slide_editor()
+        doc = te.document()
+        cur0 = te.textCursor()
+        if selection_only and cur0.hasSelection():
+            a = min(cur0.anchor(), cur0.position())
+            b = max(cur0.anchor(), cur0.position())
+        else:
+            a, b = 0, doc.characterCount()
+        cur = QTextCursor(doc)
+        cur.beginEditBlock()
+        for pos in range(a, b):
+            if doc.characterAt(pos) == "\u0000":
+                break
+            if not _char_format_at_doc_pos(doc, pos).fontStrikeOut():
+                continue
+            cur.setPosition(pos)
+            cur.setPosition(pos + 1, QTextCursor.KeepAnchor)
+            plain = QTextCharFormat()
+            plain.setFontStrikeOut(False)
+            cur.mergeCharFormat(plain)
+        cur.endEditBlock()
+        te.setTextCursor(cur0)
+        self._refresh_preview()
+
     def _edit_presentation_master_text(self, which: str, current: str) -> None:
         """P4-B-3：编辑母版页眉/页脚文本（参与预览/G-code）。"""
         if which not in ("header", "footer"):
@@ -3260,6 +3367,38 @@ class MainWindowFluent(FluentWindow):
         sb = Action(text="样式：正文")
         sb.triggered.connect(lambda: self._slide_apply_style_preset("body"))
         m.addAction(sb)
+        m.addSeparator()
+        a_rev = Action(text="修订模式")
+        a_rev.setCheckable(True)
+        a_rev.setChecked(self._slide_revision_mode)
+        a_rev.setToolTip(
+            "开启后 Backspace/Delete 为「标记删除」（删除线），不物理删除；"
+            "预览与 G-code 不刻写删除线字符。"
+        )
+
+        def _on_rev_toggled(checked: bool) -> None:
+            self._slide_revision_mode = bool(checked)
+
+        a_rev.toggled.connect(_on_rev_toggled)
+        m.addAction(a_rev)
+        a_acc = Action(text="接受修订（删除线内容）")
+        a_acc.setToolTip("有选区时仅处理选区，否则处理当前幻灯片全文。")
+
+        def _do_slide_accept_revision() -> None:
+            c = te.textCursor()
+            self._slide_revision_accept(selection_only=c.hasSelection())
+
+        a_acc.triggered.connect(_do_slide_accept_revision)
+        m.addAction(a_acc)
+        a_rej = Action(text="拒绝修订（去掉删除线）")
+        a_rej.setToolTip("有选区时仅处理选区，否则处理当前幻灯片全文。")
+
+        def _do_slide_reject_revision() -> None:
+            c = te.textCursor()
+            self._slide_revision_reject(selection_only=c.hasSelection())
+
+        a_rej.triggered.connect(_do_slide_reject_revision)
+        m.addAction(a_rej)
         m.addSeparator()
         ms = self._presentation_editor.master_storage()
         a_h = Action(text="母版：设置页眉")
