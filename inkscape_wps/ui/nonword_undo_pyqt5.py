@@ -1,4 +1,4 @@
-"""表格 / 演示 / 手绘 等非文字区的统一撤销（PyQt5，与 main_window 的 NonWord 栈行为一致）。"""
+"""表格 / 演示 / 手绘 / 插入素材 等非文字区的统一撤销（PyQt5）。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import QUndoCommand
 if TYPE_CHECKING:
     from inkscape_wps.ui.main_window_fluent import MainWindowFluent
 
-NonWordState = Tuple[str, str, str, str]
+NonWordState = Tuple[str, str, str, str, str]
 
 
 def capture_nonword_state_pyqt5(
@@ -18,12 +18,14 @@ def capture_nonword_state_pyqt5(
     slides: list,
     slides_master: dict,
     sketch_paths_serialized: list,
+    insert_vector_blob: dict | None,
 ) -> NonWordState:
     return (
         json.dumps(table_blob, ensure_ascii=False, sort_keys=True),
         json.dumps(slides, ensure_ascii=False),
         json.dumps(slides_master, ensure_ascii=False, sort_keys=True),
         json.dumps(sketch_paths_serialized, ensure_ascii=False),
+        json.dumps(insert_vector_blob or {}, ensure_ascii=False, sort_keys=True),
     )
 
 
@@ -38,7 +40,7 @@ class NonWordEditCommandPyQt5(QUndoCommand):
         old_state: NonWordState,
         new_state: NonWordState,
         *,
-        text: str = "表格 / 演示 / 手绘",
+        text: str = "表格 / 演示 / 手绘 / 插入素材",
     ) -> None:
         super().__init__(text)
         self._mw = mw

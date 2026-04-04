@@ -5,10 +5,11 @@ from .config_io import load_machine_config, resolve_config_path, save_machine_co
 from .coordinate_transform import transform_paths, transform_point
 from .gcode import order_paths_nearest_neighbor, paths_to_gcode
 from .grbl import GrblController, GrblSendError, verify_serial_responsive, wakeup_serial_port
-from .serial_discovery import PortInfo, filter_ports, list_port_infos
 from .hershey import HersheyFontMapper, map_document_lines
 from .kdraw_paths import kdraw_app_gcode_fonts_dir, suggest_gcode_fonts_dirs
 from .kuixiang_font import is_kuixiang_gfont_extract_payload, load_kuixiang_json_as_em_glyphs
+from .machine_monitor import MachineMonitor
+from .serial_discovery import PortInfo, filter_ports, list_port_infos
 from .types import Point, VectorPath, paths_bounding_box
 
 __all__ = [
@@ -31,6 +32,7 @@ __all__ = [
     "paths_to_gcode",
     "GrblController",
     "GrblSendError",
+    "MachineMonitor",
     "wakeup_serial_port",
     "verify_serial_responsive",
     "PortInfo",

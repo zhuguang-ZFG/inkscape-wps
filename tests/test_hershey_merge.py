@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 
 from inkscape_wps.core.hershey import HersheyFontMapper
-from inkscape_wps.core.types import Point, VectorPath
 
 
 class TestHersheyMerge(unittest.TestCase):

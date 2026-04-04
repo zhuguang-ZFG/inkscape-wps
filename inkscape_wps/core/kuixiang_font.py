@@ -1,7 +1,8 @@
 """奎享 kdraw 导出 JSON 字库（与 grblapp `gfont_loader` / `font_schema` 对齐）。
 
 仅解析 **已导出** 的 JSON（含 glyphs → 多段折线 → 点 dict 含 x,y,t）；不解析二进制 .gfont。
-坐标经 `font_points_to_layout_strokes` 转为以字心为原点的毫米笔画，再归一化到与 Hershey 一致的 em 框便于共用 `map_line`。
+坐标经 `font_points_to_layout_strokes` 转为以字心为原点的毫米笔画，
+再归一化到与 Hershey 一致的 em 框便于共用 `map_line`。
 """
 
 from __future__ import annotations
@@ -145,7 +146,7 @@ def normalize_mm_glyphs_to_em(
         ys = [y for p in polys for _, y in p]
         if not xs:
             continue
-        min_x, max_x = min(xs), max(xs)
+        min_x = min(xs)
         min_y, max_y = min(ys), max(ys)
         h = max(max_y - min_y, 1e-6)
         new_polys: List[List[Tuple[float, float]]] = []

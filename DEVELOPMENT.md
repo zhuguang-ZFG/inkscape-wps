@@ -177,19 +177,24 @@ source .venv/bin/activate  # Linux/macOS
 # 2. 安装依赖
 pip install -r requirements.txt
 
-# 3. 开发依赖（可选）
-pip install pytest pytest-qt black flake8 mypy
+# 3. 开发依赖（推荐）
+pip install -r requirements-dev.txt
 
 # 4. 验证安装
 python -m inkscape_wps --help
+
+# 5. 统一验证
+make verify
 ```
 
 ### 开发工具推荐
 
 - **IDE**: VS Code + Python 插件 / PyCharm
-- **代码格式化**: black
-- **静态检查**: flake8, mypy
-- **测试**: pytest + pytest-qt
+- **静态检查**: ruff, mypy
+- **测试**: unittest / pytest + pytest-qt
+- **统一验证入口**: `make verify` / `python3 tools/verify.py`
+  优先走 `pytest`，不可用时回退到 `unittest`
+  默认会输出 `logs/verify-report.json` 作为结构化报告
 - **调试**: pdb++ 或 IDE 内置调试器
 
 ### 项目结构约定
@@ -648,9 +653,12 @@ class MemoryEfficientProject:
 
 ### 原则（全阶段遵守）
 
+0. **`G-code` 第一优先级**：产品价值首先来自“稳定生成可刻写路径”，不是来自 UI 与 WPS 的外观相似度；任何需求都先判断是否影响 `输入 -> LayoutLine -> VectorPath -> G-code` 主链路。
 1. **路径一致性**：任何新模式（样式、列表、表格结构）必须先定义如何落到 `LayoutLine` / `VectorPath`，再谈 UI。
 2. **Fluent / PyQt6 行为对齐**：双主窗在「三件套 + 撤销策略 + 插入矢量几何」上保持同一语义（已有中心缩放等，后续改动的验收项需双窗或文档说明）。
 3. **Office 导入导出**：只承诺「可映射子集」；在 `SPEC.md` / 用户提示中列出易丢失项（复杂样式、嵌入对象等）。
+4. **交互服务于导出正确性**：状态栏、预览、右键、撤销/重做、导出入口等交互层设计，优先目标是减少误操作与前后不一致，而不是追求 1:1 视觉复刻。
+5. **UI 像 WPS 是手段，不是目标**：可以借用 WPS 的信息架构、命名和使用习惯降低学习成本，但不以像素级兼容或完整 Office 对等为版本目标。
 
 ### 阶段 P0：交互与信息架构（进行中 · 高优先级）
 
@@ -705,7 +713,7 @@ class MemoryEfficientProject:
 
 以下与**写字机产品目标**弱相关，单独立项前不纳入版本里程碑。
 
-- 协作、修订、批注、云同步  
+- 协作、修订、批注、云同步（其中：**演示页修订模式 C-3（迁移期）**：Fluent 右键可开「修订模式」，Backspace/Delete 改为加删除线；`document_bridge` 按片段取格式，删除线字符不进入 LayoutLine / G-code；PPTX 导出纯文本同步忽略删除线；提供「接受/拒绝修订」。**未做**：插入修订着色、表格/文字区修订、与标准 Office 修订 XML 互操作。）  
 - 宏、插件市场、模板云库  
 - 演示动画/过渡/母版主题、音视频（其中：母版页眉/页脚占位符 B-3 已完成（Fluent）；“主题应用到所有幻灯片” B-2 已完成（迁移期：字体/字号/对齐/段前后距））  
 - Office 像素级兼容  

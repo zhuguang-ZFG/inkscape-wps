@@ -21,6 +21,14 @@ from inkscape_wps.core.types import Point, VectorPath
 
 
 class TestProjectIo(unittest.TestCase):
+    _TABLE_BLOB = {
+        "rows": 1,
+        "cols": 1,
+        "cell_w_mm": 10.0,
+        "cell_h_mm": 10.0,
+        "cells": [[{"text": "", "html": None}]],
+    }
+
     def test_validate_header_ok(self) -> None:
         validate_project_header({"format": FORMAT_ID, "version": FORMAT_VERSION})
 
@@ -60,7 +68,7 @@ class TestProjectIo(unittest.TestCase):
                 p,
                 title="测试",
                 word_html="<p>a</p>",
-                table_blob={"rows": 1, "cols": 1, "cell_w_mm": 10.0, "cell_h_mm": 10.0, "cells": [[{"text": "", "html": None}]]},
+                table_blob=self._TABLE_BLOB,
                 slides=["<p>s</p>"],
                 slides_master={},
                 sketch_blob={},
@@ -82,7 +90,7 @@ class TestProjectIo(unittest.TestCase):
                 p,
                 title="s",
                 word_html="",
-                table_blob={"rows": 1, "cols": 1, "cell_w_mm": 10.0, "cell_h_mm": 10.0, "cells": [[{"text": "", "html": None}]]},
+                table_blob=self._TABLE_BLOB,
                 slides=[""],
                 sketch_blob=sk,
                 insert_vector=None,

@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.log
+.pytest_cache/
+.cursor/
+.kiro/
+.venv/
+.venv*/
+.mypy_cache/
+.ruff_cache/

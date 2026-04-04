@@ -19,7 +19,7 @@ import subprocess
 import tempfile
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 
 class OfficeImportError(RuntimeError):
@@ -90,7 +90,12 @@ def import_docx_to_html(path: Path) -> str:
     return "<html><body>" + "\n".join(paras_html) + "</body></html>"
 
 
-def import_xlsx_to_table_blob(path: Path, *, max_rows: int = 200, max_cols: int = 50) -> Dict[str, Any]:
+def import_xlsx_to_table_blob(
+    path: Path,
+    *,
+    max_rows: int = 200,
+    max_cols: int = 50,
+) -> Dict[str, Any]:
     try:
         import openpyxl  # type: ignore
     except ImportError as e:
@@ -116,14 +121,22 @@ def import_xlsx_to_table_blob(path: Path, *, max_rows: int = 200, max_cols: int 
         # points -> mm
         return float(height_points) * 25.4 / 72.0
 
-    sheet_default_col_w = float(getattr(getattr(ws, "sheet_format", None), "defaultColWidth", 8.43) or 8.43)
-    sheet_default_row_h_pt = float(getattr(getattr(ws, "sheet_format", None), "defaultRowHeight", 15.0) or 15.0)
+    sheet_default_col_w = float(
+        getattr(getattr(ws, "sheet_format", None), "defaultColWidth", 8.43)
+        or 8.43
+    )
+    sheet_default_row_h_pt = float(
+        getattr(getattr(ws, "sheet_format", None), "defaultRowHeight", 15.0)
+        or 15.0
+    )
 
-    # 取行/列尺寸的平均值，作为我们应用的统一 cell_w_mm/cell_h_mm（当前表格实现不支持每列/每行独立尺寸）。
+    # 取行/列尺寸的平均值，作为统一 cell_w_mm/cell_h_mm。
+    # 当前表格实现还不支持每列/每行独立尺寸。
     col_mm: list[float] = []
     for c in range(1, max_c + 1):
         letter = openpyxl.utils.get_column_letter(c)  # type: ignore[attr-defined]
-        w = ws.column_dimensions.get(letter).width if ws.column_dimensions.get(letter) is not None else None  # type: ignore[union-attr]
+        dim = ws.column_dimensions.get(letter)
+        w = dim.width if dim is not None else None  # type: ignore[union-attr]
         if w is None:
             w = sheet_default_col_w
         try:
@@ -364,4 +377,3 @@ def import_markdown_file_to_slides_plain(path: Path) -> Optional[List[str]]:
     if chunks is None:
         return None
     return [import_markdown_string_to_plain(c) for c in chunks]
-

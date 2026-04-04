@@ -22,9 +22,44 @@ dependencies = [
     "markdown>=3.5",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-qt>=4.4",
+    "mypy>=1.10",
+    "ruff>=0.6",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["inkscape_wps*"]
 
 [tool.setuptools.package-data]
 inkscape_wps = ["data/**/*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = [
+    ".venv",
+    ".venv310",
+    "logs",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+
+[tool.mypy]
+python_version = "3.10"
+files = [
+    "tools/verify.py",
+    "inkscape_wps/ui/file_flow_text.py",
+    "tests/test_file_flow_text.py",
+]
+ignore_missing_imports = true
+warn_unused_configs = true
+check_untyped_defs = true
+pretty = true

@@ -1,4 +1,8 @@
-"""修补 qframelesswindow 在 macOS 上的问题：构造时 winId 常为 0，updateFrameless 会拿到无效 NSWindow，引发异常或事件循环异常（Dock 无限弹跳、无窗口）。"""
+"""
+修补 qframelesswindow 在 macOS 上的问题：
+构造时 winId 常为 0，updateFrameless 会拿到无效 NSWindow，
+引发异常或事件循环异常（Dock 无限弹跳、无窗口）。
+"""
 
 from __future__ import annotations
 

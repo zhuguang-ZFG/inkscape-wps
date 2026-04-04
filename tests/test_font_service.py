@@ -1,0 +1,39 @@
+from __future__ import annotations
+
+import asyncio
+
+from inkscape_wps.core.services.font_service import FontService
+from inkscape_wps.core.types import VectorPath
+
+
+def test_get_character_paths_returns_empty_for_missing_char() -> None:
+    async def run() -> None:
+        service = FontService(font_directories=[])
+        service._fonts["demo"] = {"type": "json", "loaded": True, "path": None}
+        service._font_cache["demo"] = {"characters": {"A": {"strokes": [[[0, 0], [1, 1]]]}}}
+        assert await service.get_character_paths("Z", "demo") == []
+
+    asyncio.run(run())
+
+
+def test_get_character_paths_returns_scaled_vector_paths() -> None:
+    async def run() -> None:
+        service = FontService(font_directories=[])
+        service._fonts["demo"] = {"type": "json", "loaded": True, "path": None}
+        service._font_cache["demo"] = {
+            "characters": {
+                "A": {
+                    "strokes": [
+                        [[0, 0], [2, 3]],
+                        [[4, 5]],
+                    ]
+                }
+            }
+        }
+
+        paths = await service.get_character_paths("A", "demo", scale=2.0)
+        assert len(paths) == 1
+        assert isinstance(paths[0], VectorPath)
+        assert [(p.x, p.y) for p in paths[0].points] == [(0.0, 0.0), (4.0, 6.0)]
+
+    asyncio.run(run())

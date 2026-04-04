@@ -27,10 +27,34 @@ class SerialLike(Protocol):
 StatusHandler = Callable[[Dict[str, str]], None]
 LineHandler = Callable[[str], None]
 ErrorHandler = Callable[[str], None]
+ProgressHandler = Callable[[int, int], None]
 
 
 class GrblSendError(RuntimeError):
     """单行 G-code 未得到 ok（error / alarm / 超时）。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        acked_count: int | None = None,
+        total_count: int | None = None,
+        failed_command: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.acked_count = acked_count
+        self.total_count = total_count
+        self.failed_command = failed_command
+
+
+_EEPROM_WRITE_GCODE = ("G10 L2", "G10 L20", "G28.1", "G30.1")
+
+
+def _is_eeprom_write(cmd: str) -> bool:
+    upper = cmd.upper().strip()
+    if upper.startswith("$") and "=" in upper:
+        return True
+    return any(upper.startswith(prefix) for prefix in _EEPROM_WRITE_GCODE)
 
 
 def wakeup_serial_port(
@@ -49,18 +73,12 @@ def wakeup_serial_port(
     t0 = time.monotonic()
     while time.monotonic() - t0 < drain_timeout_s:
         try:
-            n = int(getattr(stream, "in_waiting", 0) or 0)
-        except Exception:
-            n = 0
-        if n <= 0:
-            time.sleep(0.02)
-            continue
-        try:
             raw = stream.readline()
         except Exception:
             break
         if not raw:
-            break
+            time.sleep(0.02)
+            continue
         line = raw.decode("utf-8", errors="replace").rstrip()
         if on_line and line.strip():
             on_line(line)
@@ -105,13 +123,6 @@ def verify_serial_responsive(
     t0 = time.monotonic()
     while time.monotonic() - t0 < drain_after_wake_s:
         try:
-            n = int(getattr(stream, "in_waiting", 0) or 0)
-        except Exception:
-            n = 0
-        if n <= 0:
-            time.sleep(0.02)
-            continue
-        try:
             raw = stream.readline()
         except Exception:
             break
@@ -145,7 +156,27 @@ def verify_serial_responsive(
 
     return (
         False,
-        "未收到任何应答：请检查是否接好下位机、波特率是否与固件一致（常见 115200），以及是否为 GRBL/兼容固件。",
+        "未收到任何应答：请检查是否接好下位机、"
+        "波特率是否与固件一致（常见 115200），"
+        "以及是否为 GRBL/兼容固件。",
+    )
+
+
+def verify_grbl_responsive(
+    stream: SerialLike,
+    *,
+    settle_s: float = 0.15,
+    drain_after_wake_s: float = 0.55,
+    probe_timeout_s: float = 2.5,
+    on_line: Optional[LineHandler] = None,
+) -> Tuple[bool, str]:
+    """通用 GRBL 连通性探测，兼容串口与 TCP/Telnet 文本流。"""
+    return verify_serial_responsive(
+        stream,
+        settle_s=settle_s,
+        drain_after_wake_s=drain_after_wake_s,
+        probe_timeout_s=probe_timeout_s,
+        on_line=on_line,
     )
 
 
@@ -174,6 +205,8 @@ class GrblController:
         self._reader_alive = False
         self._reader_thread: Optional[threading.Thread] = None
         self._send_lock = threading.Lock()
+        self._last_program_lines: List[str] = []
+        self._last_checkpoint = 0
 
     def start_reader(self) -> None:
         if self._reader_thread and self._reader_alive:
@@ -264,17 +297,33 @@ class GrblController:
         line_timeout_s: Optional[float] = None,
         streaming: bool = False,
         rx_buffer_size: int = 128,
+        on_progress: Optional[ProgressHandler] = None,
     ) -> Tuple[int, int]:
         """
         逐行发送程序（跳过空行与括号注释行）。
-        streaming=True 时按字节预算在固件缓冲内尽量排队多行，仍逐条等待 ok（与 grblapp JobRunner 思路一致）。
+        streaming=True 时按字节预算在固件缓冲内尽量排队多行，
+        仍逐条等待 ok（与 grblapp JobRunner 思路一致）。
         返回 (收到 ok 的行数, 总行数)。
         """
         lines = executable_gcode_lines(gcode_text)
+        self._last_program_lines = list(lines)
+        self._last_checkpoint = 0
         to = line_timeout_s if line_timeout_s is not None else self._default_timeout
         if not streaming:
-            for ln in lines:
-                self.send_line_sync(ln, timeout_s=to)
+            for idx, ln in enumerate(lines):
+                try:
+                    self.send_line_sync(ln, timeout_s=to)
+                except GrblSendError as e:
+                    self._last_checkpoint = idx
+                    raise GrblSendError(
+                        str(e),
+                        acked_count=idx,
+                        total_count=len(lines),
+                        failed_command=ln,
+                    ) from e
+                self._last_checkpoint = idx + 1
+                if on_progress:
+                    on_progress(self._last_checkpoint, len(lines))
             return len(lines), len(lines)
 
         cap = max(8, int(rx_buffer_size) - 2)
@@ -285,7 +334,39 @@ class GrblController:
         ok_count = 0
         while ok_count < n:
             while li < n:
-                raw = (lines[li] + "\n").encode("utf-8")
+                current_cmd = lines[li]
+                if _is_eeprom_write(current_cmd):
+                    while pending:
+                        try:
+                            self.wait_ok(timeout_s=to)
+                        except GrblSendError as e:
+                            raise GrblSendError(
+                                str(e),
+                                acked_count=ok_count,
+                                total_count=n,
+                                failed_command=lines[ok_count] if ok_count < n else current_cmd,
+                            ) from e
+                        buf_used -= pending.popleft()
+                        ok_count += 1
+                        self._last_checkpoint = ok_count
+                        if on_progress:
+                            on_progress(ok_count, n)
+                    try:
+                        self.send_line_sync(current_cmd, timeout_s=to)
+                    except GrblSendError as e:
+                        raise GrblSendError(
+                            str(e),
+                            acked_count=ok_count,
+                            total_count=n,
+                            failed_command=current_cmd,
+                        ) from e
+                    li += 1
+                    ok_count += 1
+                    self._last_checkpoint = ok_count
+                    if on_progress:
+                        on_progress(ok_count, n)
+                    continue
+                raw = (current_cmd + "\n").encode("utf-8")
                 cost = len(raw)
                 # 超长单行无法与「预算内拼包」；先排空已排队再单独发，避免 buf_used 逻辑死锁
                 if cost > cap:
@@ -296,12 +377,27 @@ class GrblController:
                         if time.monotonic() > drain_deadline:
                             raise GrblSendError(
                                 f"流式发送：排空待确认队列超时（仍余 {len(pending)} 条未收到 ok），"
-                                "请检查串口连接、增大 grbl_line_timeout_s，或缩短单行 G-code / 增大 RX 预算。"
+                                "请检查串口连接、增大 grbl_line_timeout_s，"
+                                "或缩短单行 G-code / 增大 RX 预算。",
+                                acked_count=ok_count,
+                                total_count=n,
+                                failed_command=current_cmd,
                             )
                         remain = drain_deadline - time.monotonic()
-                        self.wait_ok(timeout_s=min(to, max(0.05, remain)))
+                        try:
+                            self.wait_ok(timeout_s=min(to, max(0.05, remain)))
+                        except GrblSendError as e:
+                            raise GrblSendError(
+                                str(e),
+                                acked_count=ok_count,
+                                total_count=n,
+                                failed_command=lines[ok_count] if ok_count < n else current_cmd,
+                            ) from e
                         buf_used -= pending.popleft()
                         ok_count += 1
+                        self._last_checkpoint = ok_count
+                        if on_progress:
+                            on_progress(ok_count, n)
                     with self._send_lock:
                         self._s.write(raw)
                     pending.append(cost)
@@ -316,11 +412,59 @@ class GrblController:
                 pending.append(cost)
                 li += 1
             if not pending:
-                raise GrblSendError("流式发送无法推进（缓冲预算过小或内部状态错误）")
-            self.wait_ok(timeout_s=to)
+                raise GrblSendError(
+                    "流式发送无法推进（缓冲预算过小或内部状态错误）",
+                    acked_count=ok_count,
+                    total_count=n,
+                    failed_command=lines[li] if li < n else None,
+                )
+            try:
+                self.wait_ok(timeout_s=to)
+            except GrblSendError as e:
+                raise GrblSendError(
+                    str(e),
+                    acked_count=ok_count,
+                    total_count=n,
+                    failed_command=lines[ok_count] if ok_count < n else None,
+                ) from e
             buf_used -= pending.popleft()
             ok_count += 1
+            self._last_checkpoint = ok_count
+            if on_progress:
+                on_progress(ok_count, n)
         return ok_count, n
+
+    @property
+    def last_checkpoint(self) -> int:
+        return self._last_checkpoint
+
+    @property
+    def can_resume_from_checkpoint(self) -> bool:
+        return self._last_checkpoint > 0 and len(self._last_program_lines) > self._last_checkpoint
+
+    def remaining_program_lines_from_checkpoint(self) -> List[str]:
+        if not self.can_resume_from_checkpoint:
+            return []
+        return list(self._last_program_lines[self._last_checkpoint :])
+
+    def resume_from_checkpoint(
+        self,
+        *,
+        line_timeout_s: Optional[float] = None,
+        streaming: bool = False,
+        rx_buffer_size: int = 128,
+        on_progress: Optional[ProgressHandler] = None,
+    ) -> Tuple[int, int]:
+        remaining = self.remaining_program_lines_from_checkpoint()
+        if not remaining:
+            return 0, 0
+        return self.send_program(
+            "\n".join(remaining),
+            line_timeout_s=line_timeout_s,
+            streaming=streaming,
+            rx_buffer_size=rx_buffer_size,
+            on_progress=on_progress,
+        )
 
     def soft_reset(self) -> None:
         self._s.write(b"\x18")
@@ -347,7 +491,8 @@ class GrblController:
 def parse_bf_field(status_fields: Dict[str, str]) -> Tuple[Optional[int], Optional[int]]:
     """
     解析 Grbl 实时状态中的 ``Bf:`` 字段：``Bf:<planner 空闲块数>,<串口 RX 剩余字节>``。
-    空闲、无积压时第二项通常接近固件串口接收缓冲容量（Grbl_Esp32 见 ``Report.cpp`` / ``Serial.*``）。
+    空闲、无积压时第二项通常接近固件串口接收缓冲容量
+    （Grbl_Esp32 见 ``Report.cpp`` / ``Serial.*``）。
     """
     raw = status_fields.get("bf")
     if not raw:

@@ -23,7 +23,11 @@ from PyQt6.QtWidgets import (
 )
 
 from inkscape_wps.core.config import MachineConfig
-from inkscape_wps.ui.document_bridge import LayoutLine, apply_default_tab_stops, text_edit_to_layout_lines
+from inkscape_wps.ui.document_bridge import (
+    LayoutLine,
+    apply_default_tab_stops,
+    text_edit_to_layout_lines,
+)
 
 
 def _slide_plain_preview(stored: str, max_len: int = 18) -> str:

@@ -6,10 +6,18 @@ from __future__ import annotations
 
 from typing import Callable, List
 
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont, QKeyEvent, QTextCharFormat, QTextBlockFormat, QTextCursor, QTextDocument
+from PyQt5.QtCore import QSize, Qt, pyqtSignal
+from PyQt5.QtGui import (
+    QFont,
+    QKeyEvent,
+    QTextBlockFormat,
+    QTextCharFormat,
+    QTextCursor,
+    QTextDocument,
+)
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -38,7 +46,7 @@ def _slide_plain_preview(stored: str, max_len: int = 18) -> str:
     if s.startswith("<"):
         doc = QTextDocument()
         doc.setHtml(stored)
-        t = doc.toPlainText().strip().replace("\n", " ")
+        t = document_plain_text_skip_strike(doc).strip().replace("\n", " ")
     else:
         t = stored.strip().replace("\n", " ")
     if len(t) <= max_len:
@@ -79,20 +87,57 @@ class WpsPresentationEditorPyQt5(QWidget):
     """类 WPS「演示」：左侧幻灯片列表 + 右侧当前页编辑。"""
 
     contentChanged = pyqtSignal()
+    currentSlideChanged = pyqtSignal(int, int)
 
     def __init__(self, cfg: MachineConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._cfg = cfg
         self._slide_height_mm = 80.0
+        self.setObjectName("WpsPresentationEditor")
+        self.setStyleSheet(
+            """
+            QWidget#WpsPresentationEditor {
+                background-color: #ffffff;
+            }
+            QListWidget {
+                background-color: #f7fafc;
+                border: 1px solid #d8e0e8;
+                border-radius: 8px;
+                padding: 6px;
+            }
+            QListWidget::item {
+                border: 1px solid transparent;
+                border-radius: 6px;
+                padding: 10px 10px;
+                margin: 4px 0;
+                background-color: #ffffff;
+            }
+            QListWidget::item:selected {
+                background-color: #e6f4ea;
+                border-color: #b7d8c2;
+                color: #0f3d26;
+            }
+            QTextEdit {
+                background-color: #ffffff;
+                border: 1px solid #d8e0e8;
+                border-radius: 10px;
+                padding: 10px;
+            }
+            """
+        )
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(10)
 
         bar = QHBoxLayout()
+        bar.setSpacing(8)
         self._btn_new = QPushButton("新建幻灯片")
+        self._btn_new.setFixedHeight(30)
         self._btn_new.clicked.connect(self._new_slide)
         bar.addWidget(self._btn_new)
         self._btn_del = QPushButton("删除当前页")
+        self._btn_del.setFixedHeight(30)
         self._btn_del.clicked.connect(self._delete_current_slide)
         bar.addWidget(self._btn_del)
         bar.addStretch(1)
@@ -100,15 +145,23 @@ class WpsPresentationEditorPyQt5(QWidget):
             "每页独立富文本；G-code 合并各页并沿 Y 错开。"
             " 左侧列表可拖拽排序；列表聚焦时 Alt+↑ / Alt+↓ 上移/下移。"
         )
-        hint.setStyleSheet("color:#6b7280;font-size:12px;")
+        hint.setStyleSheet(
+            "color:#6b7280;font-size:12px;background:#f8fafc;"
+            "border-radius:8px;padding:8px 10px;"
+        )
         hint.setWordWrap(True)
         bar.addWidget(hint)
+        self._meta = QLabel()
+        self._meta.setStyleSheet("color:#44505c;font-size:12px;font-weight:600;")
+        self._meta.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        bar.addWidget(self._meta)
         root.addLayout(bar)
 
         split = QSplitter()
         self._list = _SlideListWidget()
         self._list._host = self
         self._list.setMaximumWidth(220)
+        self._list.setMinimumWidth(220)
         self._list.setDragDropMode(QAbstractItemView.InternalMove)
         self._list.setDefaultDropAction(Qt.MoveAction)
         self._list.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -142,6 +195,105 @@ class WpsPresentationEditorPyQt5(QWidget):
     def slide_list_widget(self) -> QListWidget:
         """左侧幻灯片列表（供主窗挂接右键菜单等）。"""
         return self._list
+
+    def _build_slide_list_card(self, index: int, preview: str, *, selected: bool) -> QWidget:
+        card = QFrame()
+        card.setObjectName("SlideListCard")
+        if selected:
+            card.setStyleSheet(
+                """
+                QFrame#SlideListCard {
+                    background-color: #eaf6ef;
+                    border: 1px solid #9fc9ac;
+                    border-radius: 8px;
+                }
+                """
+            )
+        else:
+            card.setStyleSheet(
+                """
+                QFrame#SlideListCard {
+                    background-color: #ffffff;
+                    border: 1px solid #dce4eb;
+                    border-radius: 8px;
+                }
+                """
+            )
+        row = QHBoxLayout(card)
+        row.setContentsMargins(8, 8, 8, 8)
+        row.setSpacing(8)
+
+        thumb = QFrame()
+        thumb.setFixedSize(42, 52)
+        thumb.setStyleSheet(
+            (
+                "background:#d9efdf;border:1px solid #9fc9ac;border-radius:6px;"
+                if selected
+                else "background:#f7fafc;border:1px solid #d8e0e8;border-radius:6px;"
+            )
+        )
+        thumb_l = QVBoxLayout(thumb)
+        thumb_l.setContentsMargins(0, 0, 0, 0)
+        thumb_no = QLabel(str(index + 1))
+        thumb_no.setAlignment(Qt.AlignCenter)
+        thumb_no.setStyleSheet(
+            "color:#134e31;font-size:16px;font-weight:700;"
+            if selected
+            else "color:#1c6b42;font-size:16px;font-weight:700;"
+        )
+        thumb_l.addStretch(1)
+        thumb_l.addWidget(thumb_no)
+        thumb_l.addStretch(1)
+        row.addWidget(thumb)
+
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(2)
+        title = QLabel(f"第 {index + 1} 页")
+        title.setStyleSheet(
+            "color:#153a25;font-size:12px;font-weight:700;"
+            if selected
+            else "color:#2c333a;font-size:12px;font-weight:700;"
+        )
+        text_col.addWidget(title)
+        preview_lb = QLabel(preview or "空白幻灯片")
+        preview_lb.setWordWrap(True)
+        preview_lb.setStyleSheet(
+            "color:#42614d;font-size:11px;"
+            if selected
+            else "color:#74808c;font-size:11px;"
+        )
+        text_col.addWidget(preview_lb)
+        text_col.addStretch(1)
+        row.addLayout(text_col, 1)
+        return card
+
+    def _update_meta_label(self) -> None:
+        count = len(self._slides)
+        current = min(max(self._list.currentRow(), 0), max(count - 1, 0)) + 1
+        parts = [f"{count} 页", f"当前第 {current} 页"]
+        if self._master_header.strip() or self._master_footer.strip():
+            parts.append("含母版")
+        self._meta.setText("  |  ".join(parts))
+
+    def _refresh_slide_card_selection(self) -> None:
+        current_row = self._list.currentRow()
+        for row in range(self._list.count()):
+            item = self._list.item(row)
+            if item is None:
+                continue
+            pv = _slide_plain_preview(self._slides[row] if row < len(self._slides) else "")
+            item.setSizeHint(QSize(0, 72))
+            self._list.setItemWidget(
+                item,
+                self._build_slide_list_card(row, pv, selected=row == current_row),
+            )
+
+    def _sync_toolbar_state(self) -> None:
+        has_many = len(self._slides) > 1
+        self._btn_del.setEnabled(has_many)
+        self._btn_del.setToolTip("至少保留一页幻灯片" if not has_many else "")
+        self._update_meta_label()
 
     def add_slide(self) -> None:
         """新建幻灯片（与工具栏「新建幻灯片」相同）。"""
@@ -282,25 +434,43 @@ class WpsPresentationEditorPyQt5(QWidget):
         if it is None:
             return
         pv = _slide_plain_preview(self._slides[row] if row < len(self._slides) else "")
-        it.setText(f"幻灯片 {row + 1}" + (f" · {pv}" if pv else ""))
+        text = f"第 {row + 1} 页"
+        if pv:
+            text = f"{text}\n{pv}"
+        it.setText(text)
+        it.setSizeHint(QSize(0, 72))
+        self._list.setItemWidget(
+            it,
+            self._build_slide_list_card(row, pv, selected=row == self._list.currentRow()),
+        )
+        self._update_meta_label()
 
     def _refresh_list(self, select_row: int = 0) -> None:
         self._list.blockSignals(True)
         self._list.clear()
         for i in range(len(self._slides)):
             pv = _slide_plain_preview(self._slides[i])
-            label = f"幻灯片 {i + 1}" + (f" · {pv}" if pv else "")
+            label = f"第 {i + 1} 页"
+            if pv:
+                label = f"{label}\n{pv}"
             it = QListWidgetItem(label)
             it.setData(Qt.UserRole, i)
+            it.setSizeHint(QSize(0, 72))
             self._list.addItem(it)
+            self._list.setItemWidget(it, self._build_slide_list_card(i, pv, selected=False))
         self._list.blockSignals(False)
         if self._slides:
             self._list.setCurrentRow(min(select_row, len(self._slides) - 1))
+        self._refresh_slide_card_selection()
+        self._sync_toolbar_state()
 
     def _on_slide_selected(self, row: int) -> None:
         if row < 0 or row >= len(self._slides):
             return
         self._apply_slide_to_editor(self._slides[row])
+        self._refresh_slide_card_selection()
+        self._sync_toolbar_state()
+        self.currentSlideChanged.emit(row, len(self._slides))
 
     def _new_slide(self) -> None:
         self._on_editor_text_changed()
@@ -317,7 +487,7 @@ class WpsPresentationEditorPyQt5(QWidget):
         if row < 0:
             row = 0
         self._slides.pop(row)
-        self._refresh_list(select_row=max(0, row - 1))
+        self._refresh_list(select_row=min(row, len(self._slides) - 1))
         self._on_slide_selected(self._list.currentRow())
         self.contentChanged.emit()
 
@@ -369,19 +539,23 @@ class WpsPresentationEditorPyQt5(QWidget):
         d = d or {}
         self._master_header = str(d.get("header", "") or "")
         self._master_footer = str(d.get("footer", "") or "")
+        self._update_meta_label()
         self.contentChanged.emit()
 
     def set_master_header(self, header: str) -> None:
         self._master_header = str(header or "")
+        self._update_meta_label()
         self.contentChanged.emit()
 
     def set_master_footer(self, footer: str) -> None:
         self._master_footer = str(footer or "")
+        self._update_meta_label()
         self.contentChanged.emit()
 
     def clear_master(self) -> None:
         self._master_header = ""
         self._master_footer = ""
+        self._update_meta_label()
         self.contentChanged.emit()
 
     def apply_theme_to_all_slides(

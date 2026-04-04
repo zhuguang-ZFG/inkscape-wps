@@ -1,4 +1,7 @@
-"""工程文件 JSON：文字 / 表格 / 演示 / 插入矢量 与标题（不含机器配置，配置仍用 machine_config.toml）。"""
+"""
+工程文件 JSON：文字 / 表格 / 演示 / 插入矢量 与标题。
+不含机器配置，配置仍用 machine_config.toml。
+"""
 
 from __future__ import annotations
 

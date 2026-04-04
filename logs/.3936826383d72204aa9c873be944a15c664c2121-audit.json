@@ -1,0 +1,15 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 14
+    },
+    "auditLog": "/Users/apple/Documents/GitHub/inkscape-wps/logs/.3936826383d72204aa9c873be944a15c664c2121-audit.json",
+    "files": [
+        {
+            "date": 1775290640038,
+            "name": "/Users/apple/Documents/GitHub/inkscape-wps/logs/mcp-puppeteer-2026-04-04.log",
+            "hash": "b109a187379ff86b46908cddb877789b6bdd0752ecbf4d9c066b2c9f9ff41773"
+        }
+    ],
+    "hashType": "sha256"
+}

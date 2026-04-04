@@ -1,6 +1,8 @@
 """本机奎享 KDraw 安装路径探测（macOS / Windows 常见位置）。
 
-.gfont 为二进制，本仓库不解析；用户需用 grblapp 的 ``export_kuixiang_from_kdraw`` 或官方流程导出 JSON 后由 ``HersheyFontMapper`` 加载。
+.gfont 为二进制，本仓库不解析；
+用户需用 grblapp 的 ``export_kuixiang_from_kdraw``
+或官方流程导出 JSON 后由 ``HersheyFontMapper`` 加载。
 """
 
 from __future__ import annotations

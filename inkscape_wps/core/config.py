@@ -64,6 +64,9 @@ class MachineConfig:
     coord_offset_y_mm: float = 0.0
 
     # --- 串口 UI ---
+    connection_mode: str = "serial"
+    tcp_host: str = ""
+    tcp_port: int = 23
     serial_show_bluetooth_only: bool = False
 
     # --- 单线字库（空字符串则使用包内 data/hershey_roman.json）---

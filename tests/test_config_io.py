@@ -33,6 +33,17 @@ class TestConfigIo(unittest.TestCase):
             self.assertTrue(loaded.coord_mirror_x)
             self.assertEqual(loaded.draw_feed_rate, 1500)
 
+    def test_tcp_connection_fields_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            path = d / "machine_config.toml"
+            cfg = MachineConfig(connection_mode="tcp", tcp_host="192.168.4.1", tcp_port=23)
+            save_machine_config(cfg, path)
+            loaded, _ = load_machine_config(d)
+            self.assertEqual(loaded.connection_mode, "tcp")
+            self.assertEqual(loaded.tcp_host, "192.168.4.1")
+            self.assertEqual(loaded.tcp_port, 23)
+
 
 if __name__ == "__main__":
     unittest.main()

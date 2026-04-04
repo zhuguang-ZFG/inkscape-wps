@@ -12,19 +12,20 @@ from PyQt6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer, QUrl
 from PyQt6.QtGui import (
     QAction,
     QBrush,
-    QColor,
     QCloseEvent,
+    QColor,
     QDesktopServices,
     QFont,
     QKeySequence,
     QMouseEvent,
+    QPainter,
     QPen,
     QShortcut,
     QTextCharFormat,
     QUndoStack,
-    QPainter,
 )
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -35,16 +36,17 @@ from PyQt6.QtWidgets import (
     QGraphicsView,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenu,
     QMenuBar,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QSplitter,
-    QSizePolicy,
     QStackedWidget,
     QStatusBar,
     QTextEdit,
@@ -58,12 +60,16 @@ from inkscape_wps.core.config import MachineConfig
 from inkscape_wps.core.config_io import load_machine_config, save_machine_config
 from inkscape_wps.core.coordinate_transform import transform_paths
 from inkscape_wps.core.gcode import order_paths_nearest_neighbor, paths_to_gcode
-from inkscape_wps.core.grbl import GrblController, GrblSendError, parse_bf_field, verify_serial_responsive
+from inkscape_wps.core.grbl import (
+    GrblController,
+    GrblSendError,
+    parse_bf_field,
+    verify_grbl_responsive,
+)
 from inkscape_wps.core.grbl_firmware_ref import GRBL_ESP32_DEFAULT_RX_BUFFER_SIZE
 from inkscape_wps.core.hershey import HersheyFontMapper, map_document_lines
 from inkscape_wps.core.kdraw_paths import suggest_gcode_fonts_dirs
-from inkscape_wps.core.raster_trace import trace_image_to_svg
-from inkscape_wps.core.serial_discovery import filter_ports, list_port_infos
+from inkscape_wps.core.machine_monitor import MachineMonitor
 from inkscape_wps.core.project_io import (
     deserialize_vector_paths,
     load_project_file,
@@ -71,15 +77,18 @@ from inkscape_wps.core.project_io import (
     serialize_vector_paths,
     write_text_atomic,
 )
+from inkscape_wps.core.raster_trace import trace_image_to_svg
+from inkscape_wps.core.serial_discovery import filter_ports, list_port_infos
 from inkscape_wps.core.svg_import import vector_paths_from_svg_file, vector_paths_from_svg_string
+from inkscape_wps.core.transport import TcpTextStream
 from inkscape_wps.core.types import Point, VectorPath, paths_bounding_box
-from inkscape_wps.ui.nonword_undo import NonWordEditCommand, capture_nonword_state
 from inkscape_wps.ui.document_bridge import apply_default_tab_stops, text_edit_to_layout_lines
-from inkscape_wps.ui.math_symbols import populate_qmenu_symbols
 from inkscape_wps.ui.drawing_view_model import DrawingViewModel
+from inkscape_wps.ui.math_symbols import populate_qmenu_symbols
+from inkscape_wps.ui.nonword_undo import NonWordEditCommand, capture_nonword_state
 from inkscape_wps.ui.presentation_editor import WpsPresentationEditor
-from inkscape_wps.ui.table_editor import WpsTableEditor
 from inkscape_wps.ui.ribbon import RibbonGroup, RibbonTabVSep, RibbonVSeparator, WpsRibbon
+from inkscape_wps.ui.table_editor import WpsTableEditor
 from inkscape_wps.ui.wps_theme import apply_wps_theme
 from inkscape_wps.ui.wps_widgets import make_horizontal_ruler_mm
 
@@ -134,7 +143,10 @@ class MainWindow(QMainWindow):
         )
         self._view_model = DrawingViewModel(self._cfg)
         self._grbl: Optional[GrblController] = None
+        self._machine_monitor = MachineMonitor()
         self._pending_bf_for_rx_spin = False
+        self._job_state_text = "就绪"
+        self._job_progress = (0, 0)
         self._nonword_undo_stack = QUndoStack(self)
         self._nonword_undo_stack.setUndoLimit(300)
         self._nonword_undo_anchor: tuple[str, str, str] = ("", "", "")
@@ -154,6 +166,10 @@ class MainWindow(QMainWindow):
         self._project_path: Optional[Path] = None
 
         self._build_ui()
+        self._status_poll_timer = QTimer(self)
+        self._status_poll_timer.setInterval(700)
+        self._status_poll_timer.timeout.connect(self._poll_grbl_status)
+        self._status_poll_timer.start()
         self._table_editor.set_font_point_size_resolver(lambda: float(self._size_spin.value()))
         _f0 = self._editor.currentFont()
         # 提升文字抗锯齿策略（对“字体不清晰”通常最有效之一）
@@ -458,7 +474,10 @@ class MainWindow(QMainWindow):
 
         g_stroke = RibbonGroup("单线字库")
         b_pick = QPushButton("选择 JSON…")
-        b_pick.setToolTip("支持包内 Hershey JSON、或 grblapp/奎享导出的合并字库 JSON（大文件将延迟加载）")
+        b_pick.setToolTip(
+            "支持包内 Hershey JSON、或 grblapp/奎享导出的合并字库 JSON"
+            "（大文件将延迟加载）"
+        )
         b_pick.clicked.connect(self._pick_stroke_font_json)
         g_stroke.add_widget(b_pick)
         b_reset = QPushButton("恢复包内")
@@ -469,7 +488,10 @@ class MainWindow(QMainWindow):
         b_kd.clicked.connect(self._open_kdraw_gcode_fonts_dir)
         g_stroke.add_widget(b_kd)
         b_merge = QPushButton("合并字库…")
-        b_merge.setToolTip("叠加第二份 JSON（奎享/Hershey 格式），覆盖同码位；可与主编译大包中文库组合")
+        b_merge.setToolTip(
+            "叠加第二份 JSON（奎享/Hershey 格式），覆盖同码位；"
+            "可与主编译大包中文库组合"
+        )
         b_merge.clicked.connect(self._pick_stroke_merge_json)
         g_stroke.add_widget(b_merge)
         b_merge_clr = QPushButton("清除合并")
@@ -546,6 +568,16 @@ class MainWindow(QMainWindow):
 
         # ----- Ribbon: 设备 -----
         dev_row, _ = self._ribbon.add_page("设备")
+        g_serial = RibbonGroup("连接方式")
+        self._conn_mode_combo = QComboBox()
+        self._conn_mode_combo.addItem("串口 / 蓝牙 SPP", "serial")
+        self._conn_mode_combo.addItem("Wi-Fi / Telnet (TCP)", "tcp")
+        self._conn_mode_combo.currentIndexChanged.connect(self._on_connection_mode_changed)
+        g_serial.add_widget(QLabel("模式"))
+        g_serial.add_widget(self._conn_mode_combo)
+        dev_row.addWidget(g_serial)
+        dev_row.addWidget(RibbonVSeparator())
+
         g_serial = RibbonGroup("串口 / 蓝牙 SPP")
         self._cb_bt_only = QCheckBox("仅蓝牙")
         self._cb_bt_only.toggled.connect(self._on_bluetooth_filter_toggled)
@@ -569,6 +601,20 @@ class MainWindow(QMainWindow):
         dev_row.addWidget(g_baud)
         dev_row.addWidget(RibbonVSeparator())
 
+        g_tcp = RibbonGroup("Wi-Fi / Telnet")
+        g_tcp.add_widget(QLabel("主机"))
+        self._tcp_host_edit = QLineEdit()
+        self._tcp_host_edit.setPlaceholderText("192.168.4.1")
+        self._tcp_host_edit.setMinimumWidth(150)
+        g_tcp.add_widget(self._tcp_host_edit)
+        g_tcp.add_widget(QLabel("端口"))
+        self._tcp_port_spin = QSpinBox()
+        self._tcp_port_spin.setRange(1, 65535)
+        self._tcp_port_spin.setValue(23)
+        g_tcp.add_widget(self._tcp_port_spin)
+        dev_row.addWidget(g_tcp)
+        dev_row.addWidget(RibbonVSeparator())
+
         g_stream = RibbonGroup("发送")
         self._cb_stream = QCheckBox("流式填满缓冲")
         self._cb_stream.setToolTip(
@@ -583,7 +629,8 @@ class MainWindow(QMainWindow):
         self._rx_buf_spin.setValue(max(32, int(self._cfg.grbl_rx_buffer_size)))
         self._rx_buf_spin.setToolTip(
             f"流式发送时按字节估算固件串口 RX 缓冲。"
-            f"新建默认 {GRBL_ESP32_DEFAULT_RX_BUFFER_SIZE}（对齐 Grbl_Esp32 Serial.h 的 RX_BUFFER_SIZE；AVR 常见 128）。"
+            f"新建默认 {GRBL_ESP32_DEFAULT_RX_BUFFER_SIZE}"
+            "（对齐 Grbl_Esp32 Serial.h 的 RX_BUFFER_SIZE；AVR 常见 128）。"
             f"可点「Bf→RX」在已连接且固件上报 Bf 时，用 Idle 下的剩余空间近似容量。"
         )
         self._rx_buf_spin.valueChanged.connect(self._sync_cfg_widgets)
@@ -681,6 +728,14 @@ class MainWindow(QMainWindow):
         self._send_btn.setEnabled(False)
         g_run.add_widget(self._connect_btn)
         g_run.add_widget(self._send_btn)
+        self._resume_checkpoint_btn = QPushButton("断点续发")
+        self._resume_checkpoint_btn.clicked.connect(self._resume_from_checkpoint)
+        self._resume_checkpoint_btn.setEnabled(False)
+        g_run.add_widget(self._resume_checkpoint_btn)
+        self._reset_btn = QPushButton("软复位 Ctrl+X")
+        self._reset_btn.clicked.connect(self._soft_reset_machine)
+        self._reset_btn.setEnabled(False)
+        g_run.add_widget(self._reset_btn)
         _h1 = QPushButton("暂停 !")
         _h1.clicked.connect(self._feed_hold)
         g_run.add_widget(_h1)
@@ -780,6 +835,21 @@ class MainWindow(QMainWindow):
         log_frame.setObjectName("TaskPaneGroup")
         lf = QVBoxLayout(log_frame)
         lf.addWidget(QLabel("串口 / 状态"))
+        self._machine_state_label = QLabel("设备状态: 未连接")
+        self._job_state_label = QLabel("作业状态: 就绪")
+        self._job_progress_label = QLabel("作业进度: 0/0")
+        self._machine_pos_label = QLabel("机械坐标: X0.000 Y0.000 Z0.000")
+        self._machine_buf_label = QLabel("缓冲: Planner - / RX -")
+        self._machine_alarm_label = QLabel("告警: -")
+        for lbl in (
+            self._machine_state_label,
+            self._job_state_label,
+            self._job_progress_label,
+            self._machine_pos_label,
+            self._machine_buf_label,
+            self._machine_alarm_label,
+        ):
+            lf.addWidget(lbl)
         self._log = QPlainTextEdit()
         self._log.setReadOnly(True)
         self._log.setMaximumBlockCount(5000)
@@ -790,9 +860,14 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 3)
 
         self._cb_bt_only.setChecked(self._cfg.serial_show_bluetooth_only)
+        mode = getattr(self._cfg, "connection_mode", "serial")
+        self._conn_mode_combo.setCurrentIndex(1 if mode == "tcp" else 0)
+        self._tcp_host_edit.setText(str(getattr(self._cfg, "tcp_host", "") or ""))
+        self._tcp_port_spin.setValue(max(1, int(getattr(self._cfg, "tcp_port", 23) or 23)))
         self._apply_cfg_to_coord_widgets()
         self._apply_pen_mode_widgets()
         self._apply_gcode_extra_widgets_from_cfg()
+        self._update_connection_mode_widgets()
         self._refresh_ports()
 
     def _build_status_bar(self) -> None:
@@ -983,10 +1058,18 @@ class MainWindow(QMainWindow):
             self._st_cursor.setText(f"表格  │  {r} 行 × {c} 列")
         else:
             self._st_cursor.setText(self._presentation_editor.status_line())
+        snap = self._machine_monitor.snapshot
         if self._grbl is not None:
-            self._st_conn.setText("串口：已连接")
+            is_tcp = str(getattr(self._cfg, "connection_mode", "serial")) == "tcp"
+            conn_mode = "Wi-Fi" if is_tcp else "串口"
+            parts = [f"{conn_mode}：已连接", f"状态：{snap.state}"]
+            if snap.rx_free >= 0:
+                parts.append(f"RX：{snap.rx_free}")
+            if snap.mpos != (0.0, 0.0, 0.0):
+                parts.append(f"MPos X{snap.mpos[0]:.3f} Y{snap.mpos[1]:.3f} Z{snap.mpos[2]:.3f}")
+            self._st_conn.setText("  │  ".join(parts))
         else:
-            self._st_conn.setText("串口：未连接")
+            self._st_conn.setText("连接：未连接")
         d = self._editor.document()
         if idx == 0:
             if hasattr(d, "isUndoAvailable"):
@@ -996,6 +1079,31 @@ class MainWindow(QMainWindow):
         else:
             self._act_undo.setEnabled(self._nonword_undo_stack.canUndo())
             self._act_redo.setEnabled(self._nonword_undo_stack.canRedo())
+        self._refresh_machine_summary()
+
+    def _refresh_machine_summary(self) -> None:
+        snap = self._machine_monitor.snapshot
+        if hasattr(self, "_machine_state_label"):
+            self._machine_state_label.setText(f"设备状态: {snap.state}")
+            self._job_state_label.setText(f"作业状态: {self._job_state_text}")
+            self._job_progress_label.setText(
+                f"作业进度: {self._job_progress[0]}/{self._job_progress[1]}"
+            )
+            self._machine_pos_label.setText(
+                f"机械坐标: X{snap.mpos[0]:.3f} Y{snap.mpos[1]:.3f} Z{snap.mpos[2]:.3f}"
+            )
+            planner = "-" if snap.planner_free < 0 else str(snap.planner_free)
+            rx = "-" if snap.rx_free < 0 else str(snap.rx_free)
+            self._machine_buf_label.setText(f"缓冲: Planner {planner} / RX {rx}")
+            self._machine_alarm_label.setText(f"告警: {snap.last_alarm or '-'}")
+
+    def _poll_grbl_status(self) -> None:
+        if self._grbl is None:
+            return
+        try:
+            self._grbl.send_realtime_status_request()
+        except Exception:
+            return
 
     def _sync_undo_actions(self, available: bool) -> None:
         if self._stack.currentIndex() != 0:
@@ -1204,7 +1312,8 @@ class MainWindow(QMainWindow):
                 self,
                 "KDraw 字库",
                 "未检测到常见安装路径下的 gcodeFonts。\n"
-                "若已安装奎享 KDraw，可将 .gfont 用 grblapp 的导出工具转为 JSON 后放入本应用可读路径。",
+                "若已安装奎享 KDraw，可将 .gfont 用 grblapp 的导出工具"
+                "转为 JSON 后放入本应用可读路径。",
             )
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(dirs[0].resolve())))
@@ -1331,7 +1440,8 @@ class MainWindow(QMainWindow):
             if self._insert_move_drag is not None:
                 sp = self._preview.mapToScene(event.position())
                 st: QPointF = self._insert_move_drag["start_scene"]
-                dmm_x, dmm_y = self._scene_delta_to_mm_delta(QPointF(sp.x() - st.x(), sp.y() - st.y()), mpp)
+                delta = QPointF(sp.x() - st.x(), sp.y() - st.y())
+                dmm_x, dmm_y = self._scene_delta_to_mm_delta(delta, mpp)
                 self._insert_vector_dx_mm = self._insert_move_drag["dx0"] + dmm_x
                 self._insert_vector_dy_mm = self._insert_move_drag["dy0"] + dmm_y
                 self._insert_offset_x_spin.blockSignals(True)
@@ -1839,6 +1949,9 @@ class MainWindow(QMainWindow):
         self._cfg.z_down_mm = self._z_down.value()
         self._cfg.grbl_streaming = self._cb_stream.isChecked()
         self._cfg.grbl_rx_buffer_size = int(self._rx_buf_spin.value())
+        self._cfg.connection_mode = str(self._conn_mode_combo.currentData() or "serial")
+        self._cfg.tcp_host = self._tcp_host_edit.text().strip()
+        self._cfg.tcp_port = int(self._tcp_port_spin.value())
         dm = self._pen_mode_combo.currentData()
         self._cfg.gcode_pen_mode = str(dm) if dm is not None else "z"
         self._cfg.gcode_m3_s_value = int(self._m3_s_spin.value())
@@ -1859,6 +1972,20 @@ class MainWindow(QMainWindow):
     def _on_bluetooth_filter_toggled(self, checked: bool) -> None:
         self._cfg.serial_show_bluetooth_only = bool(checked)
         self._refresh_ports()
+
+    def _on_connection_mode_changed(self, _index: int) -> None:
+        self._cfg.connection_mode = str(self._conn_mode_combo.currentData() or "serial")
+        self._update_connection_mode_widgets()
+        self._refresh_ports()
+
+    def _update_connection_mode_widgets(self) -> None:
+        mode = str(getattr(self._cfg, "connection_mode", "serial") or "serial").strip().lower()
+        is_serial = mode != "tcp"
+        self._cb_bt_only.setEnabled(is_serial)
+        self._port_combo.setEnabled(is_serial)
+        self._baud_spin.setEnabled(is_serial)
+        self._tcp_host_edit.setEnabled(not is_serial)
+        self._tcp_port_spin.setEnabled(not is_serial)
 
     def _write_project_to_path(self, path: Path) -> None:
         iv = None
@@ -2026,6 +2153,13 @@ class MainWindow(QMainWindow):
         self._log.appendPlainText(s)
 
     def _refresh_ports(self) -> None:
+        if (
+            hasattr(self, "_conn_mode_combo")
+            and str(self._conn_mode_combo.currentData() or "serial") != "serial"
+        ):
+            self._port_combo.clear()
+            self._port_combo.addItem("TCP 模式无需扫描串口", "")
+            return
         self._port_combo.clear()
         ports = filter_ports(list_port_infos(), self._cfg.serial_show_bluetooth_only)
         for info in ports:
@@ -2039,45 +2173,74 @@ class MainWindow(QMainWindow):
         if self._grbl is not None:
             self._grbl.close()
             self._grbl = None
+            self._machine_monitor.on_disconnected()
             self._connect_btn.setText("连接")
             self._send_btn.setEnabled(False)
-            self._log_append("已断开串口")
+            self._resume_checkpoint_btn.setEnabled(False)
+            self._reset_btn.setEnabled(False)
+            self._set_job_status("就绪", 0, 0)
+            self._log_append("已断开设备连接")
             self._update_status_bar()
             return
         try:
-            import serial
+            mode = str(self._conn_mode_combo.currentData() or "serial").strip().lower()
+            if mode == "tcp":
+                host = self._tcp_host_edit.text().strip()
+                port_num = int(self._tcp_port_spin.value())
+                if not host:
+                    raise ValueError("请输入 TCP 主机/IP")
+                stream = TcpTextStream(host, port_num, timeout_s=0.2)
+                stream.connect()
+                target_desc = f"{host}:{port_num}"
+                connect_title = "TCP"
+            else:
+                import serial
 
-            data = self._port_combo.currentData()
-            port = (data if isinstance(data, str) and data.strip() else "") or self._port_combo.currentText().strip()
-            if "—" in port:
-                port = port.split("—", 1)[0].strip()
-            if not port or port.startswith("（"):
-                raise ValueError("请选择或输入串口设备路径")
-            ser = serial.Serial(port, self._baud_spin.value(), timeout=0.1)
-            ok_probe, probe_msg = verify_serial_responsive(ser, on_line=self._log_append)
+                data = self._port_combo.currentData()
+                port = (
+                    (data if isinstance(data, str) and data.strip() else "")
+                    or self._port_combo.currentText().strip()
+                )
+                if "—" in port:
+                    port = port.split("—", 1)[0].strip()
+                if not port or port.startswith("（"):
+                    raise ValueError("请选择或输入串口设备路径")
+                stream = serial.Serial(port, self._baud_spin.value(), timeout=0.1)
+                target_desc = port
+                connect_title = "串口"
+            ok_probe, probe_msg = verify_grbl_responsive(stream, on_line=self._log_append)
             if not ok_probe:
-                ser.close()
-                QMessageBox.warning(self, "串口无应答", probe_msg + "\n\n端口已关闭，未建立连接。")
+                stream.close()
+                QMessageBox.warning(
+                    self,
+                    f"{connect_title}无应答",
+                    probe_msg + "\n\n连接已关闭，未建立连接。",
+                )
                 return
             self._log_append(probe_msg)
             self._grbl = GrblController(
-                ser,
+                stream,
                 default_line_timeout_s=self._cfg.grbl_line_timeout_s,
                 on_status=self._on_grbl_status,
                 on_log_line=self._log_append,
-                on_protocol_error=lambda s: self._log_append(f"[协议] {s}"),
+                on_protocol_error=self._on_grbl_protocol_error,
             )
+            self._machine_monitor.on_connected()
             self._grbl.start_reader()
             time.sleep(0.05)
             self._connect_btn.setText("断开")
             self._send_btn.setEnabled(True)
-            self._log_append(f"已打开 {port}")
+            self._resume_checkpoint_btn.setEnabled(False)
+            self._reset_btn.setEnabled(True)
+            self._set_job_status("就绪", 0, 0)
+            self._log_append(f"已连接 {target_desc}")
             self._update_status_bar()
         except Exception as e:
-            QMessageBox.warning(self, "串口", str(e))
+            QMessageBox.warning(self, "连接", str(e))
 
     def _on_grbl_status(self, d: dict) -> None:
-        self._log_append(str(d))
+        self._machine_monitor.apply_status_fields(d)
+        self._update_status_bar()
         if not self._pending_bf_for_rx_spin:
             return
         _, rx_free = parse_bf_field(d)
@@ -2092,8 +2255,30 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"RX 预算已同步为 {v}", 4000)
         else:
             self._log_append(
-                "Bf→RX：本帧状态无有效 Bf。请确认固件启用 REPORT_FIELD_BUFFER_STATE（Grbl_Esp32 Report.cpp），并重试。"
+                "Bf→RX：本帧状态无有效 Bf。"
+                "请确认固件启用 REPORT_FIELD_BUFFER_STATE"
+                "（Grbl_Esp32 Report.cpp），并重试。"
             )
+
+    def _on_grbl_protocol_error(self, s: str) -> None:
+        self._machine_monitor.apply_alarm_or_error(s)
+        self._log_append(f"[协议] {s}")
+        self._update_status_bar()
+
+    def _set_job_status(
+        self,
+        text: str,
+        current: int | None = None,
+        total: int | None = None,
+    ) -> None:
+        self._job_state_text = text
+        if current is not None and total is not None:
+            self._job_progress = (int(current), int(total))
+        self._update_status_bar()
+
+    def _job_progress_callback(self, current: int, total: int) -> None:
+        self._set_job_status("运行中", current, total)
+        QApplication.processEvents()
 
     def _bf_rx_sync_timeout(self) -> None:
         if self._pending_bf_for_rx_spin:
@@ -2114,18 +2299,80 @@ class MainWindow(QMainWindow):
         self._sync_cfg_widgets()
         g = paths_to_gcode(self._work_paths(), self._cfg, order=False)
         try:
+            self._set_job_status("发送中", 0, len([ln for ln in g.splitlines() if ln.strip()]))
             n_ok, n_tot = self._grbl.send_program(
                 g,
                 streaming=self._cfg.grbl_streaming,
                 rx_buffer_size=self._cfg.grbl_rx_buffer_size,
+                on_progress=self._job_progress_callback,
             )
+            self._resume_checkpoint_btn.setEnabled(False)
+            self._set_job_status("已完成", n_ok, n_tot)
             self._log_append(f"已发送 {n_ok}/{n_tot} 行")
             self.statusBar().showMessage(f"G-code 已发送 {n_ok} 行", 5000)
         except GrblSendError as e:
+            self._set_job_status("失败", e.acked_count or 0, e.total_count or 0)
             QMessageBox.warning(self, "GRBL 发送失败", str(e))
             self._log_append(f"[错误] {e}")
+            remaining = len(self._grbl.remaining_program_lines_from_checkpoint())
+            self._resume_checkpoint_btn.setEnabled(self._grbl.can_resume_from_checkpoint)
+            if self._grbl.can_resume_from_checkpoint:
+                self._log_append(
+                    f"[断点] 已确认 {e.acked_count or 0} 行，剩余 {remaining} 行可续发"
+                )
         except Exception as e:
             QMessageBox.warning(self, "发送", str(e))
+
+    def _resume_from_checkpoint(self) -> None:
+        if not self._grbl or not self._grbl.can_resume_from_checkpoint:
+            self._resume_checkpoint_btn.setEnabled(False)
+            return
+        remaining = self._grbl.remaining_program_lines_from_checkpoint()
+        r = QMessageBox.question(
+            self,
+            "断点续发",
+            f"准备从上次确认断点继续发送，剩余 {len(remaining)} 行。\n\n"
+            "请确认机床位置和纸张状态未变更。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if r != QMessageBox.Yes:
+            return
+        try:
+            self._set_job_status("断点续发", 0, len(remaining))
+            n_ok, n_tot = self._grbl.resume_from_checkpoint(
+                streaming=self._cfg.grbl_streaming,
+                rx_buffer_size=self._cfg.grbl_rx_buffer_size,
+                on_progress=self._job_progress_callback,
+            )
+            self._resume_checkpoint_btn.setEnabled(False)
+            self._set_job_status("已完成", n_ok, n_tot)
+            self._log_append(f"断点续发完成 {n_ok}/{n_tot} 行")
+            self.statusBar().showMessage(f"断点续发完成 {n_ok} 行", 5000)
+        except GrblSendError as e:
+            self._set_job_status("失败", e.acked_count or 0, e.total_count or 0)
+            self._resume_checkpoint_btn.setEnabled(self._grbl.can_resume_from_checkpoint)
+            QMessageBox.warning(self, "断点续发失败", str(e))
+            self._log_append(f"[错误] 断点续发失败: {e}")
+
+    def _soft_reset_machine(self) -> None:
+        if not self._grbl:
+            return
+        r = QMessageBox.question(
+            self,
+            "软复位",
+            "即将发送 Ctrl+X 软复位，当前作业会被中断。继续吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if r != QMessageBox.Yes:
+            return
+        try:
+            self._grbl.soft_reset()
+            self._set_job_status("已复位", 0, 0)
+            self._log_append("已发送软复位 Ctrl+X")
+        except Exception as e:
+            QMessageBox.warning(self, "软复位失败", str(e))
 
     def _feed_hold(self) -> None:
         if self._grbl:

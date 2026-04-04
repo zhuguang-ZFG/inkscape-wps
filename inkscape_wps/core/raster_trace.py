@@ -1,7 +1,10 @@
-"""位图 → SVG：通过外部开源工具 **Potrace** / **Autotrace** 子进程（与 grblapp/Inkscape 工作流类似）。
+"""
+位图 → SVG：通过外部开源工具 **Potrace** / **Autotrace** 子进程
+（与 grblapp/Inkscape 工作流类似）。
 
 本模块不链接 Potrace 库，仅调用命令行；用户需自行安装（如 ``brew install potrace``、
-Windows 下将 ``potrace.exe`` 加入 PATH）。可选依赖 **Pillow** 用于把常见图片转为 Potrace 可读的 BMP。
+Windows 下将 ``potrace.exe`` 加入 PATH）。
+可选依赖 **Pillow** 用于把常见图片转为 Potrace 可读的 BMP。
 
 Potrace 为 GPL 许可；本仓库以子进程方式调用，不将其源码并入产品。
 """

@@ -10,8 +10,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QTextCharFormat, QTextCursor, QTextDocument
 from PyQt5.QtWidgets import (
-    QApplication,
     QAbstractItemView,
+    QApplication,
+    QComboBox,
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
@@ -23,6 +24,7 @@ from PyQt5.QtWidgets import (
 )
 
 from inkscape_wps.core.config import MachineConfig
+from inkscape_wps.core.types import Point, VectorPath
 from inkscape_wps.ui.document_bridge_pyqt5 import html_fragment_to_layout_lines
 
 LayoutLineUnion = Union[
@@ -44,37 +46,85 @@ class WpsTableEditorPyQt5(QWidget):
         self._cfg = cfg
         self._font_pt_resolver: Callable[[], float] = lambda: 12.0
         self._suspend_item_sync = False
+        self.setObjectName("WpsTableEditor")
+        self.setStyleSheet(
+            """
+            QWidget#WpsTableEditor {
+                background-color: #ffffff;
+            }
+            QTableWidget {
+                background-color: #ffffff;
+                alternate-background-color: #f7fafc;
+                border: 1px solid #d8e0e8;
+                border-radius: 8px;
+                gridline-color: #dfe6ec;
+                selection-background-color: #e6f4ea;
+            }
+            QHeaderView::section {
+                background-color: #f3f6f9;
+                border: none;
+                border-right: 1px solid #dfe6ec;
+                border-bottom: 1px solid #dfe6ec;
+                padding: 4px 6px;
+                color: #4a545e;
+            }
+            """
+        )
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(10)
 
         bar = QHBoxLayout()
-        bar.addWidget(QLabel("单元格宽 (mm)"))
+        bar.setSpacing(8)
+        metric_lab = QLabel("单元格宽 (mm)")
+        metric_lab.setStyleSheet("color:#44505c;font-size:12px;font-weight:600;")
+        bar.addWidget(metric_lab)
         self._spin_cw = QDoubleSpinBox()
+        self._spin_cw.setFixedHeight(30)
         self._spin_cw.setRange(5.0, 500.0)
         self._spin_cw.setValue(28.0)
         self._spin_cw.setDecimals(1)
         self._spin_cw.valueChanged.connect(self._emit_changed)
         bar.addWidget(self._spin_cw)
-        bar.addWidget(QLabel("单元格高 (mm)"))
+        metric_h_lab = QLabel("单元格高 (mm)")
+        metric_h_lab.setStyleSheet("color:#44505c;font-size:12px;font-weight:600;")
+        bar.addWidget(metric_h_lab)
         self._spin_ch = QDoubleSpinBox()
+        self._spin_ch.setFixedHeight(30)
         self._spin_ch.setRange(4.0, 200.0)
         self._spin_ch.setValue(12.0)
         self._spin_ch.setDecimals(1)
         self._spin_ch.valueChanged.connect(self._emit_changed)
         bar.addWidget(self._spin_ch)
+        grid_lab = QLabel("网格线")
+        grid_lab.setStyleSheet("color:#44505c;font-size:12px;font-weight:600;")
+        bar.addWidget(grid_lab)
+        self._grid_gcode_mode = QComboBox()
+        self._grid_gcode_mode.setFixedHeight(30)
+        self._grid_gcode_mode.addItem("不导出", "none")
+        self._grid_gcode_mode.addItem("仅外框", "outer")
+        self._grid_gcode_mode.addItem("全部网格", "all")
+        self._grid_gcode_mode.setCurrentIndex(0)
+        self._grid_gcode_mode.setToolTip("控制表格边框/网格线是否参与预览与 G-code。")
+        self._grid_gcode_mode.currentIndexChanged.connect(lambda *_: self._emit_changed())
+        bar.addWidget(self._grid_gcode_mode)
         bar.addStretch(1)
 
         self._btn_add_row = QPushButton("+ 行")
+        self._btn_add_row.setFixedHeight(30)
         self._btn_add_row.clicked.connect(self._add_row)
         bar.addWidget(self._btn_add_row)
         self._btn_del_row = QPushButton("− 行")
+        self._btn_del_row.setFixedHeight(30)
         self._btn_del_row.clicked.connect(self._del_row)
         bar.addWidget(self._btn_del_row)
         self._btn_add_col = QPushButton("+ 列")
+        self._btn_add_col.setFixedHeight(30)
         self._btn_add_col.clicked.connect(self._add_col)
         bar.addWidget(self._btn_add_col)
         self._btn_del_col = QPushButton("− 列")
+        self._btn_del_col.setFixedHeight(30)
         self._btn_del_col.clicked.connect(self._del_col)
         bar.addWidget(self._btn_del_col)
         root.addLayout(bar)
@@ -93,7 +143,9 @@ class WpsTableEditorPyQt5(QWidget):
             "预览与 G-code 随当前组件切换。"
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color:#6b7280;font-size:12px;")
+        hint.setStyleSheet(
+            "color:#6b7280;font-size:12px;background:#f8fafc;border-radius:8px;padding:8px 10px;"
+        )
         root.addWidget(hint)
 
     def set_font_point_size_resolver(self, fn: Callable[[], float]) -> None:
@@ -161,12 +213,18 @@ class WpsTableEditorPyQt5(QWidget):
         rows = self._table.rowCount()
         cols = self._table.columnCount()
         out: List[Tuple[int, int, int, int]] = []
+        covered: set[Tuple[int, int]] = set()
         for r in range(rows):
             for c in range(cols):
+                if (r, c) in covered:
+                    continue
                 rs = int(self._table.rowSpan(r, c) or 1)
                 cs = int(self._table.columnSpan(r, c) or 1)
                 if rs > 1 or cs > 1:
                     out.append((r, c, rs, cs))
+                    for rr in range(r, r + rs):
+                        for cc in range(c, c + cs):
+                            covered.add((rr, cc))
         return out
 
     def _span_covered_cells(self) -> Tuple[set[Tuple[int, int]], set[Tuple[int, int]]]:
@@ -583,6 +641,80 @@ class WpsTableEditorPyQt5(QWidget):
 
         return out
 
+    def include_grid_lines_in_gcode(self) -> bool:
+        return self.grid_gcode_mode() != "none"
+
+    def grid_gcode_mode(self) -> str:
+        data = self._grid_gcode_mode.currentData()
+        mode = str(data or "none")
+        return mode if mode in ("none", "outer", "all") else "none"
+
+    def to_grid_paths(self) -> List[VectorPath]:
+        mode = self.grid_gcode_mode()
+        if mode == "none":
+            return []
+
+        m = float(self._cfg.document_margin_mm)
+        cw = float(self._spin_cw.value())
+        ch = float(self._spin_ch.value())
+        rows = self._table.rowCount()
+        cols = self._table.columnCount()
+        if rows <= 0 or cols <= 0:
+            return []
+
+        page_h = float(self._cfg.page_height_mm)
+
+        def _norm(a: tuple[float, float], b: tuple[float, float]) -> tuple[tuple[float, float], tuple[float, float]]:
+            return (a, b) if a <= b else (b, a)
+
+        if mode == "outer":
+            left = m
+            right = m + cols * cw
+            top = m
+            bottom = m + rows * ch
+            y_top = page_h - top
+            y_bottom = page_h - bottom
+            out: List[VectorPath] = []
+            for a, b in (
+                ((left, y_top), (right, y_top)),
+                ((right, y_top), (right, y_bottom)),
+                ((left, y_bottom), (right, y_bottom)),
+                ((left, y_bottom), (left, y_top)),
+            ):
+                na, nb = _norm(a, b)
+                out.append(VectorPath((Point(na[0], na[1]), Point(nb[0], nb[1]))))
+            return out
+
+        covered, anchor_cells = self._span_covered_cells()
+        segments: set[tuple[tuple[float, float], tuple[float, float]]] = set()
+
+        for r in range(rows):
+            for c in range(cols):
+                if (r, c) in covered and (r, c) not in anchor_cells:
+                    continue
+                rs = int(self._table.rowSpan(r, c) or 1)
+                cs = int(self._table.columnSpan(r, c) or 1)
+                left = m + c * cw
+                right = m + (c + cs) * cw
+                top = m + r * ch
+                bottom = m + (r + rs) * ch
+                y_top = page_h - top
+                y_bottom = page_h - bottom
+                corners = [
+                    ((left, y_top), (right, y_top)),
+                    ((right, y_top), (right, y_bottom)),
+                    ((right, y_bottom), (left, y_bottom)),
+                    ((left, y_bottom), (left, y_top)),
+                ]
+                for a, b in corners:
+                    if a != b:
+                        segments.add(_norm(a, b))
+
+        out: List[VectorPath] = []
+        for (ax, ay), (bx, by) in sorted(segments):
+            out.append(VectorPath((Point(ax, ay), Point(bx, by))))
+        return out
+
     def to_project_blob(self) -> Dict[str, Any]:
         rows, cols = self.row_column_count()
         anchors_info = self._span_anchors()
@@ -611,6 +743,8 @@ class WpsTableEditorPyQt5(QWidget):
         return {
             "cell_w_mm": self._spin_cw.value(),
             "cell_h_mm": self._spin_ch.value(),
+            "include_grid_lines": self.include_grid_lines_in_gcode(),
+            "grid_gcode_mode": self.grid_gcode_mode(),
             "rows": rows,
             "cols": cols,
             "cells": cells,
@@ -622,6 +756,11 @@ class WpsTableEditorPyQt5(QWidget):
         try:
             self._spin_cw.setValue(float(blob.get("cell_w_mm", 28.0)))
             self._spin_ch.setValue(float(blob.get("cell_h_mm", 12.0)))
+            mode = str(blob.get("grid_gcode_mode", "") or "").strip().lower()
+            if mode not in ("none", "outer", "all"):
+                mode = "all" if bool(blob.get("include_grid_lines", False)) else "none"
+            idx = max(0, self._grid_gcode_mode.findData(mode))
+            self._grid_gcode_mode.setCurrentIndex(idx)
             rows = int(blob.get("rows", 4))
             cols = int(blob.get("cols", 4))
             rows = max(1, rows)

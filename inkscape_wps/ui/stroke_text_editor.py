@@ -6,7 +6,7 @@ import html
 import re
 from typing import Optional
 
-from PyQt5.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QInputMethodEvent, QKeyEvent, QMouseEvent, QPainter, QPen
 from PyQt5.QtWidgets import QApplication, QWidget
 
@@ -19,7 +19,12 @@ from inkscape_wps.ui.stroke_text_model import StrokeTextModel
 class StrokeTextEditor(QWidget):
     textChanged = pyqtSignal()
 
-    def __init__(self, cfg: MachineConfig, mapper: HersheyFontMapper, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        cfg: MachineConfig,
+        mapper: HersheyFontMapper,
+        parent: Optional[QWidget] = None,
+    ) -> None:
         super().__init__(parent)
         self._cfg = cfg
         self._mapper = mapper
@@ -60,7 +65,11 @@ class StrokeTextEditor(QWidget):
         self._emit_changed()
 
     def set_stroke_font_family(self, family: str) -> None:
-        """同步 QWidget 字体族；单线笔画轮廓仍由当前 Hershey/奎享字库与 mm/pt 决定，与写字机一致。"""
+        """
+        同步 QWidget 字体族；
+        单线笔画轮廓仍由当前 Hershey/奎享字库与 mm/pt 决定，
+        与写字机一致。
+        """
         fam = (family or "").strip() or self.font().family()
         f = QFont(self.font())
         f.setFamily(fam)
@@ -342,6 +351,19 @@ class StrokeTextEditor(QWidget):
         self._relayout()
         p = QPainter(self)
         p.fillRect(self.rect(), QColor("#ffffff"))
+        try:
+            page_w = max(1.0, float(getattr(self._cfg, "page_width_mm", 210.0)))
+            margin_mm = max(0.0, float(getattr(self._cfg, "document_margin_mm", 0.0)))
+            margin_px = min(float(self.width()) * 0.45, float(self.width()) * margin_mm / page_w)
+        except (TypeError, ValueError):
+            margin_px = 0.0
+        if margin_px > 0.5:
+            guide = QColor("#d9e6dc")
+            p.fillRect(QRectF(0.0, 0.0, margin_px, float(self.height())), QColor("#f8fbf9"))
+            p.setPen(QPen(guide, 1.0, Qt.DashLine))
+            p.drawLine(QPointF(margin_px, 0.0), QPointF(margin_px, float(self.height())))
+            right_x = max(margin_px, float(self.width()) - margin_px)
+            p.drawLine(QPointF(right_x, 0.0), QPointF(right_x, float(self.height())))
         # selection
         if self._model.has_selection():
             s, t = self._model.selection_range()

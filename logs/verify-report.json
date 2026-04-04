@@ -1,0 +1,27 @@
+{
+  "python": "3.12.0",
+  "strict_tools": true,
+  "failed": false,
+  "results": [
+    {
+      "name": "compileall",
+      "status": "passed",
+      "detail": ""
+    },
+    {
+      "name": "pytest",
+      "status": "passed",
+      "detail": ""
+    },
+    {
+      "name": "ruff",
+      "status": "passed",
+      "detail": ""
+    },
+    {
+      "name": "mypy",
+      "status": "passed",
+      "detail": ""
+    }
+  ]
+}

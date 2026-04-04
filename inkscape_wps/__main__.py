@@ -12,6 +12,10 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PyQt6.QtWidgets import QApplication, QWidget
 
 _logger = logging.getLogger(__name__)
 
@@ -40,13 +44,15 @@ def _darwin_clear_offscreen_for_gui() -> None:
         )
 
 
-def _ensure_pyqt_binding_plugin_env(
-    binding: str, *, prefer_this_binding: bool = False
-) -> None:
+def _ensure_pyqt_binding_plugin_env(binding: str, *, prefer_this_binding: bool = False) -> None:
     """
     在首次 import PyQt* 之前调用。
-    修正常见「找不到平台插件 / cocoa」：venv、IDE、打包后未继承 QT_PLUGIN_PATH 时 Qt 能加载但不出窗。
-    prefer_this_binding: 进入 PyQt6 入口时为 True，避免先前已为 PyQt5 写入的 QT_PLUGIN_PATH 阻碍 Qt6。
+    修正常见「找不到平台插件 / cocoa」：
+    venv、IDE、打包后未继承 QT_PLUGIN_PATH 时，
+    Qt 能加载但不出窗。
+    prefer_this_binding:
+    进入 PyQt6 入口时为 True，避免先前已为 PyQt5 写入的
+    QT_PLUGIN_PATH 阻碍 Qt6。
     """
     if sys.platform == "darwin":
         os.environ.setdefault("QT_QPA_PLATFORM", "cocoa")
@@ -89,8 +95,24 @@ def _ensure_pyqt_binding_plugin_env(
                 flush=True,
             )
     except Exception:
-        _logger.debug("配置 QT 插件路径时跳过（可设 INKSCAPE_WPS_DEBUG_QT=1 查看详情）", exc_info=True)
+        _logger.debug(
+            "配置 QT 插件路径时跳过（可设 INKSCAPE_WPS_DEBUG_QT=1 查看详情）",
+            exc_info=True,
+        )
         return
+
+
+def _fluent_dependencies_available() -> tuple[bool, str | None]:
+    """仅探测 Fluent 依赖是否存在，避免在回退前提前加载 PyQt5。"""
+    missing: list[str] = []
+    for pkg in ("PyQt5", "qfluentwidgets"):
+        spec = importlib.util.find_spec(pkg)
+        origin = getattr(spec, "origin", None) if spec is not None else None
+        if not origin:
+            missing.append(pkg)
+    if missing:
+        return False, f"缺少依赖：{', '.join(missing)}"
+    return True, None
 
 
 def _center_on_primary_screen(app: "QApplication", w: "QWidget") -> None:
@@ -116,7 +138,10 @@ def _macos_set_activation_policy_regular() -> None:
             pol = 0  # NSApplicationActivationPolicyRegular
         Cocoa.NSApplication.sharedApplication().setActivationPolicy_(pol)
     except Exception:
-        _logger.debug("设置 NSApplicationActivationPolicyRegular 失败（可忽略，未装 PyObjC 时常见）", exc_info=True)
+        _logger.debug(
+            "设置 NSApplicationActivationPolicyRegular 失败（可忽略，未装 PyObjC 时常见）",
+            exc_info=True,
+        )
 
 
 def _macos_activate_application() -> None:
@@ -139,7 +164,8 @@ def _run_fluent() -> None:
     qpa = (os.environ.get("QT_QPA_PLATFORM") or "").strip().lower()
     if qpa == "offscreen":
         print(
-            "inkscape-wps: QT_QPA_PLATFORM 仍为 offscreen（可能已设 INKSCAPE_WPS_ALLOW_OFFSCREEN=1）。\n"
+            "inkscape-wps: QT_QPA_PLATFORM 仍为 offscreen"
+            "（可能已设 INKSCAPE_WPS_ALLOW_OFFSCREEN=1）。\n"
             "Qt 只在内存里渲染，不会出现真实窗口。",
             file=sys.stderr,
             flush=True,
@@ -147,7 +173,9 @@ def _run_fluent() -> None:
     if sys.platform.startswith("linux"):
         if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
             print(
-                "inkscape-wps: 未设置 DISPLAY / WAYLAND_DISPLAY，图形界面通常无法显示（常见于纯 SSH 无 X11 转发）。",
+                "inkscape-wps: 未设置 DISPLAY / WAYLAND_DISPLAY，"
+                "图形界面通常无法显示"
+                "（常见于纯 SSH 无 X11 转发）。",
                 file=sys.stderr,
                 flush=True,
             )
@@ -171,7 +199,8 @@ def _run_fluent() -> None:
 
         apply_macos_frameless_shim()
 
-    # 须在 QApplication 存在之后再 import 主窗口：qfluentwidgets 等可能在导入链上构造 QWidget，否则会 qFatal。
+    # 须在 QApplication 存在之后再 import 主窗口：
+    # qfluentwidgets 等可能在导入链上构造 QWidget，否则会 qFatal。
     from inkscape_wps.ui.main_window_fluent import MainWindowFluent
 
     w = MainWindowFluent()
@@ -197,8 +226,12 @@ def _run_fluent() -> None:
 
     print(
         "提示：若未见窗口——\n"
-        "  • macOS：Dock 点 Python；Command+Tab。若仍异常可设环境变量 INKSCAPE_WPS_NO_FLUENT=1 使用经典界面（PyQt6）。\n"
-        "  • 远程/服务器：需在带桌面的会话运行，或配置 X11/Wayland 转发；勿设 QT_QPA_PLATFORM=offscreen。\n"
+        "  • macOS：Dock 点 Python；Command+Tab。"
+        "若仍异常可设环境变量 INKSCAPE_WPS_NO_FLUENT=1 "
+        "使用经典界面（PyQt6）。\n"
+        "  • 远程/服务器：需在带桌面的会话运行，"
+        "或配置 X11/Wayland 转发；"
+        "勿设 QT_QPA_PLATFORM=offscreen。\n"
         "  • 进程若立即回到 shell 提示符，说明已退出，请把完整终端输出（含报错）发出来。",
         file=sys.stderr,
         flush=True,
@@ -246,28 +279,29 @@ def main() -> None:
         )
         _run_pyqt6()
         return
-    try:
-        import PyQt5  # noqa: F401
-        # qfluentwidgets 在 import 时向 stdout 打印 Pro 推广，干扰终端判断是否真的起 GUI
-        if (os.environ.get("INKSCAPE_WPS_SHOW_QFW_BANNER") or "").strip() not in (
-            "1",
-            "true",
-            "yes",
-        ):
-            _qfw_out = io.StringIO()
-            with contextlib.redirect_stdout(_qfw_out):
-                import qfluentwidgets  # noqa: F401
-        else:
-            import qfluentwidgets  # noqa: F401
-    except Exception as e:
-        _logger.warning("PyQt5 或 qfluentwidgets 不可用，回退 PyQt6：%s", e, exc_info=True)
+    ok, reason = _fluent_dependencies_available()
+    if not ok:
+        _logger.warning("PyQt5 或 qfluentwidgets 不可用，回退 PyQt6：%s", reason)
         print(
-            "inkscape-wps: PyQt5 或 qfluentwidgets 不可用，回退 PyQt6（macOS 12 可能无法运行，请用 .venv310）。",
+            "inkscape-wps: PyQt5 或 qfluentwidgets 不可用，回退 PyQt6"
+            "（macOS 12 可能无法运行，请用 .venv310）。",
             file=sys.stderr,
             flush=True,
         )
         _run_pyqt6()
         return
+    # qfluentwidgets 在 import 时向 stdout 打印 Pro 推广，干扰终端判断是否真的起 GUI。
+    # 在真正进入 Fluent 分支时再导入；若此处异常，不再同进程回退到 PyQt6，避免混用 Qt5/Qt6。
+    if (os.environ.get("INKSCAPE_WPS_SHOW_QFW_BANNER") or "").strip() not in (
+        "1",
+        "true",
+        "yes",
+    ):
+        _qfw_out = io.StringIO()
+        with contextlib.redirect_stdout(_qfw_out):
+            import qfluentwidgets  # noqa: F401
+    else:
+        import qfluentwidgets  # noqa: F401
     print("inkscape-wps: 启动 Fluent UI (PyQt5)…", file=sys.stderr, flush=True)
     _run_fluent()
 

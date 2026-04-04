@@ -26,7 +26,12 @@ class DrawingViewModel:
         视图坐标 Y 向下：scene 坐标 = 纸张左上角为 (0,0)，向右向下。
         核心路径为 Y 向上毫米，故 y_px = (page_h - y_mm) / mm_per_px
         """
-        scene = QGraphicsScene(0, 0, self._cfg.page_width_mm / mm_per_px, self._cfg.page_height_mm / mm_per_px)
+        scene = QGraphicsScene(
+            0,
+            0,
+            self._cfg.page_width_mm / mm_per_px,
+            self._cfg.page_height_mm / mm_per_px,
+        )
         items: List[QGraphicsLineItem] = []
         pen_draw = QPen(Qt.GlobalColor.black)
         pen_draw.setWidthF(1.0)

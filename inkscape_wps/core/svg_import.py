@@ -1,9 +1,11 @@
 """SVG → ``VectorPath``（标准库 xml + 轻量解析，无矢量库依赖）。
 
 - ``<path d>``：``M L H V C Z`` 及相对命令。
-- 另支持 ``<line>``、``<polyline>``、``<polygon>``、``<rect>``、``<circle>``、``<ellipse>``（圆/椭圆为多边形近似）。
+- 另支持 ``<line>``、``<polyline>``、``<polygon>``、``<rect>``、
+  ``<circle>``、``<ellipse>``（圆/椭圆为多边形近似）。
 
-坐标按 SVG（Y 向下）读入，输出为文档毫米、**Y 向上**；**不经过 Hershey/单线字库**，供笔式矢量直接 ``paths_to_gcode``。
+坐标按 SVG（Y 向下）读入，输出为文档毫米、**Y 向上**；
+**不经过 Hershey/单线字库**，供笔式矢量直接 ``paths_to_gcode``。
 缩放：``viewBox`` / ``width``×``height`` 映射到纸张，保持纵横比居中。
 """
 
@@ -227,7 +229,13 @@ def _circle_poly(cx: float, cy: float, r: float, segments: int = 48) -> List[Tup
     return poly
 
 
-def _ellipse_poly(cx: float, cy: float, rx: float, ry: float, segments: int = 48) -> List[Tuple[float, float]]:
+def _ellipse_poly(
+    cx: float,
+    cy: float,
+    rx: float,
+    ry: float,
+    segments: int = 48,
+) -> List[Tuple[float, float]]:
     if rx <= 0 or ry <= 0:
         return []
     poly: List[Tuple[float, float]] = []
@@ -281,7 +289,9 @@ def _polylines_from_element(el: ET.Element) -> List[List[Tuple[float, float]]]:
     return []
 
 
-def collect_polylines_from_svg_element_tree(svg_root: ET.Element) -> List[List[Tuple[float, float]]]:
+def collect_polylines_from_svg_element_tree(
+    svg_root: ET.Element,
+) -> List[List[Tuple[float, float]]]:
     """遍历 ``<svg>`` 子树，收集所有可绘制折线（SVG 用户坐标，Y 向下）。"""
     root = svg_root
     if _local_tag(root.tag) != "svg":
@@ -322,7 +332,11 @@ def vector_paths_from_svg_file(
     不经单线字库，直接用于 ``paths_to_gcode``。
     """
     root = _svg_root_from_file_or_string(path, is_path=True)
-    return _vector_paths_from_svg_root(root, page_width_mm=page_width_mm, page_height_mm=page_height_mm)
+    return _vector_paths_from_svg_root(
+        root,
+        page_width_mm=page_width_mm,
+        page_height_mm=page_height_mm,
+    )
 
 
 def vector_paths_from_svg_string(
@@ -333,7 +347,11 @@ def vector_paths_from_svg_string(
 ) -> List[VectorPath]:
     """从 SVG 字符串解析（例如 Potrace 输出）。"""
     root = _svg_root_from_file_or_string(xml_text, is_path=False)
-    return _vector_paths_from_svg_root(root, page_width_mm=page_width_mm, page_height_mm=page_height_mm)
+    return _vector_paths_from_svg_root(
+        root,
+        page_width_mm=page_width_mm,
+        page_height_mm=page_height_mm,
+    )
 
 
 def _vector_paths_from_svg_root(

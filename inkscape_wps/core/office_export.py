@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 
 class OfficeExportError(RuntimeError):
@@ -34,7 +34,15 @@ def _convert_with_soffice(input_path: Path, target_ext: str, output_path: Path) 
         raise OfficeExportError("未检测到 soffice。")
     with tempfile.TemporaryDirectory(prefix="inkscape-wps-export-") as td:
         outdir = Path(td)
-        cmd = [soff, "--headless", "--convert-to", target_ext, "--outdir", str(outdir), str(input_path)]
+        cmd = [
+            soff,
+            "--headless",
+            "--convert-to",
+            target_ext,
+            "--outdir",
+            str(outdir),
+            str(input_path),
+        ]
         try:
             subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except subprocess.CalledProcessError as e:
@@ -69,7 +77,13 @@ class DocParagraph:
     align: str = "left"  # left/center/right/justify
 
 
-def export_docx(path: Path, *, paragraphs: List[DocParagraph], html_text: str | None = None, prefer_soffice: bool = False) -> None:
+def export_docx(
+    path: Path,
+    *,
+    paragraphs: List[DocParagraph],
+    html_text: str | None = None,
+    prefer_soffice: bool = False,
+) -> None:
     # A 路：优先用 soffice 把 HTML 转 DOCX（通常对段落版式更友好）
     if prefer_soffice and has_soffice() and html_text is not None:
         with tempfile.TemporaryDirectory(prefix="inkscape-wps-docx-") as td:
@@ -131,7 +145,11 @@ def export_xlsx(path: Path, *, table_blob: Dict[str, Any], prefer_soffice: bool 
                         row_data = cells[r] if r < len(cells) and isinstance(cells[r], list) else []
                         line: list[str] = []
                         for c in range(cols):
-                            cell = row_data[c] if c < len(row_data) and isinstance(row_data[c], dict) else {}
+                            cell = (
+                                row_data[c]
+                                if c < len(row_data) and isinstance(row_data[c], dict)
+                                else {}
+                            )
                             line.append(str(cell.get("text", "") or ""))
                         w.writerow(line)
                 _convert_with_soffice(src, "xlsx", path)
@@ -225,4 +243,3 @@ def export_markdown(path: Path, *, body: str) -> None:
     """写入 UTF-8 Markdown 文本（无第三方依赖）。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body if body else "", encoding="utf-8")
-

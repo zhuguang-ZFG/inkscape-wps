@@ -1,7 +1,8 @@
 """经典 Hershey .jhf / .hf 文本解析（无 Qt 依赖）。
 
 支持两种常见行格式：
-1. 扩展行（与 chinese-hershey-font 的 .hf.txt 一致）：前 5 位 glyph 编号、3 位顶点数、左右承、坐标串。
+1. 扩展行（与 chinese-hershey-font 的 .hf.txt 一致）：
+   前 5 位 glyph 编号、3 位顶点数、左右承、坐标串。
 2. 短行：仅 5 位编号 + 坐标串（无顶点数/承），按「 R」抬笔分段。
 
 glyph 编号在部分字库中为 Unicode 码点，在部分 Roman 字库中为独立索引；可通过同目录可选映射文件
@@ -128,8 +129,6 @@ def _parse_short_record(glyph_str: str, em_height: float) -> Tuple[int, Glyph] |
     all_pts = [p for s in strokes for p in s]
     min_x = min(p[0] for p in all_pts)
     max_x = max(p[0] for p in all_pts)
-    min_y = min(p[1] for p in all_pts)
-    max_y = max(p[1] for p in all_pts)
     left_val = min_x
     right_val = max_x
     g = _normalize_to_em(strokes, left_val=left_val, right_val=right_val, em_height=em_height)
@@ -188,7 +187,8 @@ def jhf_to_char_glyphs(path: Path, *, em_height: float = 10.0) -> Tuple[Dict[str
     """
     将 .jhf 转为与 ``HersheyFontMapper`` 兼容的 ``{字符: 折线}``。
     - 若存在 ``stem.jhf.map.json``：按 ``by_index`` 映射。
-    - 否则：**按文件内顺序**将前 95 个 glyph 对应 ASCII 32–126（与 ``tools/generate_hershey_jhf_maps.py`` 规则一致）；
+    - 否则：**按文件内顺序**将前 95 个 glyph 对应 ASCII 32–126
+      （与 ``tools/generate_hershey_jhf_maps.py`` 规则一致）；
       再为 ``32 <= glyph_id <= 126`` 且尚未占用的字符补键（双保险）。
     """
     ordered = iter_jhf_glyphs(path, em_height=em_height)

@@ -6,6 +6,7 @@ import os
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ["INKSCAPE_WPS_QT_BINDING"] = "pyqt5"
 
 try:
     from PyQt5.QtGui import QTextDocument
@@ -14,7 +15,7 @@ except ImportError:  # pragma: no cover
     QApplication = None  # type: ignore[misc, assignment]
 
 from inkscape_wps.core.config import MachineConfig
-from inkscape_wps.ui.document_bridge_pyqt5 import (
+from inkscape_wps.ui.document_bridge_compat import (
     document_plain_text_skip_strike,
     html_fragment_to_layout_lines,
     text_edit_to_layout_lines,

@@ -12,7 +12,6 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCharFormat, QTextCursor, QTextDocument
 from PyQt6.QtWidgets import (
     QDoubleSpinBox,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,

@@ -87,7 +87,11 @@ class StrokeLayoutEngine:
                 if ch == "\n":
                     i += 1
                     break
-                w = advances_px[i] if advances_px is not None and i < len(advances_px) else self.cell_w
+                w = (
+                    advances_px[i]
+                    if advances_px is not None and i < len(advances_px)
+                    else self.cell_w
+                )
                 if line_chars and (x + w - margin_px) > max_w:
                     break
                 line_chars.append(ch)
@@ -150,7 +154,12 @@ class StrokeLayoutEngine:
                 break
         return out
 
-    def caret_rect(self, rows: List[LayoutRow], caret: int, margin_px: float = 12.0) -> Tuple[float, float, float, float]:
+    def caret_rect(
+        self,
+        rows: List[LayoutRow],
+        caret: int,
+        margin_px: float = 12.0,
+    ) -> Tuple[float, float, float, float]:
         if not rows:
             _a, _d, h = self._default_vertical()
             return margin_px, margin_px, 1.0, h
@@ -172,7 +181,9 @@ class StrokeLayoutEngine:
                     x = row.x_px
                 return x, row.y_px, 1.0, row.h_px
         last = rows[-1]
-        x = last.x_px + (last.cells[-1].w_px + last.cells[-1].x_px - last.x_px if last.cells else 0.0)
+        x = last.x_px + (
+            last.cells[-1].w_px + last.cells[-1].x_px - last.x_px if last.cells else 0.0
+        )
         return x, last.y_px, 1.0, last.h_px
 
     def to_layout_lines(
@@ -196,7 +207,11 @@ class StrokeLayoutEngine:
             baseline_doc_y = row.y_px + row.baseline_du
             baseline_up_mm = cfg.page_height_mm - baseline_doc_y * mm_px_y
             ox_mm = m + row.x_px * mm_px_x
-            advs = tuple([a * mm_px_x for a in row.advances_px]) if row.advances_px else tuple([self.cell_w * mm_px_x] * len(row.text))
+            advs = (
+                tuple(a * mm_px_x for a in row.advances_px)
+                if row.advances_px
+                else tuple([self.cell_w * mm_px_x] * len(row.text))
+            )
             ref_a = max(pt * 0.5, min(pt * 1.2, row.ascent_du))
             out.append((row.text, ox_mm, baseline_up_mm, pt, ref_a, advs))
         return out

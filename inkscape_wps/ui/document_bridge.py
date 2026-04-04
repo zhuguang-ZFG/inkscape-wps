@@ -1,6 +1,7 @@
 """
 将 QTextEdit 文档转为核心层可用的行布局（毫米、Y 向上）。
-使用 QTextBlock / QTextLine 与文档布局坐标，按 TrueType 字宽生成 per-char advance，并传入 Hershey 映射。
+使用 QTextBlock / QTextLine 与文档布局坐标，
+按 TrueType 字宽生成 per-char advance，并传入 Hershey 映射。
 """
 
 from __future__ import annotations
@@ -195,7 +196,11 @@ def html_fragment_to_layout_lines(
                         break
                     j_end += 1
 
-                pt = float(tf0.pointSizeF() if tf0.pointSizeF() > 0 else tf0.pointSize() or default_pt)
+                pt = float(
+                    tf0.pointSizeF()
+                    if tf0.pointSizeF() > 0
+                    else tf0.pointSize() or default_pt
+                )
                 if pt <= 0:
                     pt = default_pt
                 fm = QFontMetricsF(tf0)

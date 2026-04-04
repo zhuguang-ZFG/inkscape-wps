@@ -71,7 +71,10 @@ class HersheyFontMapper:
             self._attach_merge_path(mp)
 
     def set_kuixiang_mm_per_unit(self, value: float) -> None:
-        """更新奎享 JSON 解析时的 font 单位→毫米系数。已载入内存的奎享字形不会自动重算，需重开字库或重启应用。"""
+        """
+        更新奎享 JSON 解析时的 font 单位→毫米系数。
+        已载入内存的奎享字形不会自动重算，需重开字库或重启应用。
+        """
         self._kuixiang_mm_per_unit = float(value)
 
     def _load_builtin_as_dict(self) -> None:
@@ -207,6 +210,23 @@ class HersheyFontMapper:
             return self._glyphs[ch.upper()]
         return self._glyphs.get(" ", [])
 
+    def has_glyph(self, ch: str) -> bool:
+        self._ensure_lazy_json()
+        return ch in self._glyphs or ch.upper() in self._glyphs
+
+    def missing_text_chars(self, text: str) -> List[str]:
+        self._ensure_lazy_json()
+        missing: List[str] = []
+        seen: set[str] = set()
+        for ch in text:
+            if ch.isspace() or ch in seen:
+                continue
+            if self.has_glyph(ch):
+                continue
+            seen.add(ch)
+            missing.append(ch)
+        return missing
+
     def estimate_advances(
         self,
         text: str,
@@ -283,8 +303,10 @@ class HersheyFontMapper:
         """
         将一行文本转为路径。
         - font_size_pt: 编辑器字号（点）
-        - reference_ascent_pt: 可选，TrueType 的 ascent（点），用于更精细的视觉补偿；缺省则按 em 框缩放
-        - advance_per_char_mm: 可选，强制统一字符间距（mm）；与 per_char_advances_mm 互斥优先后者
+        - reference_ascent_pt: 可选，TrueType 的 ascent（点），
+          用于更精细的视觉补偿；缺省则按 em 框缩放
+        - advance_per_char_mm: 可选，强制统一字符间距（mm）；
+          与 per_char_advances_mm 互斥优先后者
         - per_char_advances_mm: 可选，与 QTextLayout 字宽一致的长度须等于 len(text)
         """
         self._ensure_lazy_json()

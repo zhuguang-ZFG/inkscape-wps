@@ -7,6 +7,7 @@ from typing import Tuple
 
 from .config import MachineConfig
 
+
 def resolve_config_path(directory: Path) -> Path:
     """若目录下已有配置则沿用其路径；否则默认 ``machine_config.toml``。"""
     directory.mkdir(parents=True, exist_ok=True)

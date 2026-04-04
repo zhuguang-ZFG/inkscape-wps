@@ -1,7 +1,12 @@
 import json
 from pathlib import Path
 
-from inkscape_wps.core.project_io import FORMAT_ID, FORMAT_VERSION, load_project_file, save_project_file
+from inkscape_wps.core.project_io import (
+    FORMAT_ID,
+    FORMAT_VERSION,
+    load_project_file,
+    save_project_file,
+)
 
 
 def test_save_and_load_word_plain_text(tmp_path: Path):
