@@ -10,13 +10,19 @@ from PyQt5.QtWidgets import QUndoCommand
 if TYPE_CHECKING:
     from inkscape_wps.ui.main_window_fluent import MainWindowFluent
 
-NonWordState = Tuple[str, str, str]
+NonWordState = Tuple[str, str, str, str]
 
 
-def capture_nonword_state_pyqt5(table_blob: dict, slides: list, sketch_paths_serialized: list) -> NonWordState:
+def capture_nonword_state_pyqt5(
+    table_blob: dict,
+    slides: list,
+    slides_master: dict,
+    sketch_paths_serialized: list,
+) -> NonWordState:
     return (
         json.dumps(table_blob, ensure_ascii=False, sort_keys=True),
         json.dumps(slides, ensure_ascii=False),
+        json.dumps(slides_master, ensure_ascii=False, sort_keys=True),
         json.dumps(sketch_paths_serialized, ensure_ascii=False),
     )
 

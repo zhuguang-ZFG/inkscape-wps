@@ -62,6 +62,7 @@ class TestProjectIo(unittest.TestCase):
                 word_html="<p>a</p>",
                 table_blob={"rows": 1, "cols": 1, "cell_w_mm": 10.0, "cell_h_mm": 10.0, "cells": [[{"text": "", "html": None}]]},
                 slides=["<p>s</p>"],
+                slides_master={},
                 sketch_blob={},
                 insert_vector=None,
             )

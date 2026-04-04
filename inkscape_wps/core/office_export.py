@@ -113,31 +113,40 @@ def export_docx(path: Path, *, paragraphs: List[DocParagraph], html_text: str | 
 
 
 def export_xlsx(path: Path, *, table_blob: Dict[str, Any], prefer_soffice: bool = False) -> None:
-    # A 路：若有 soffice，可先写 CSV 再转 XLSX（对 WPS 兼容较稳）
-    if prefer_soffice and has_soffice():
-        with tempfile.TemporaryDirectory(prefix="inkscape-wps-xlsx-") as td:
-            src = Path(td) / "input.csv"
-            cells = table_blob.get("cells") or []
-            rows = int(table_blob.get("rows", len(cells) or 1))
-            cols = int(table_blob.get("cols", (len(cells[0]) if cells else 1)))
-            rows = max(1, rows)
-            cols = max(1, cols)
-            with src.open("w", encoding="utf-8", newline="") as f:
-                w = csv.writer(f)
-                for r in range(rows):
-                    row_data = cells[r] if r < len(cells) and isinstance(cells[r], list) else []
-                    line: list[str] = []
-                    for c in range(cols):
-                        cell = row_data[c] if c < len(row_data) and isinstance(row_data[c], dict) else {}
-                        line.append(str(cell.get("text", "") or ""))
-                    w.writerow(line)
-            _convert_with_soffice(src, "xlsx", path)
-            return
-
     try:
         import openpyxl  # type: ignore
     except Exception as e:
+        # A 路：若有 soffice，可先写 CSV 再转 XLSX（对 WPS 兼容较稳）
+        if prefer_soffice and has_soffice():
+            with tempfile.TemporaryDirectory(prefix="inkscape-wps-xlsx-") as td:
+                src = Path(td) / "input.csv"
+                cells = table_blob.get("cells") or []
+                rows = int(table_blob.get("rows", len(cells) or 1))
+                cols = int(table_blob.get("cols", (len(cells[0]) if cells else 1)))
+                rows = max(1, rows)
+                cols = max(1, cols)
+                with src.open("w", encoding="utf-8", newline="") as f:
+                    w = csv.writer(f)
+                    for r in range(rows):
+                        row_data = cells[r] if r < len(cells) and isinstance(cells[r], list) else []
+                        line: list[str] = []
+                        for c in range(cols):
+                            cell = row_data[c] if c < len(row_data) and isinstance(row_data[c], dict) else {}
+                            line.append(str(cell.get("text", "") or ""))
+                        w.writerow(line)
+                _convert_with_soffice(src, "xlsx", path)
+                return
         raise OfficeExportError("缺少依赖：请安装 `openpyxl` 后再导出 XLSX。") from e
+
+    def _mm_to_excel_col_width(mm: float) -> float:
+        # 经验公式：像素≈ (宽度*7)+5；像素(mm) = mm*96/25.4
+        px = float(mm) * 96.0 / 25.4
+        return max(0.0, (px - 5.0) / 7.0)
+
+    def _mm_to_excel_row_height_points(mm: float) -> float:
+        # Excel row height 的单位为 points
+        # 1 inch = 72 points = 25.4 mm
+        return float(mm) * 72.0 / 25.4
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -146,6 +155,23 @@ def export_xlsx(path: Path, *, table_blob: Dict[str, Any], prefer_soffice: bool 
     cols = int(table_blob.get("cols", (len(cells[0]) if cells else 1)))
     rows = max(1, rows)
     cols = max(1, cols)
+
+    cell_w_mm = float(table_blob.get("cell_w_mm", 28.0))
+    cell_h_mm = float(table_blob.get("cell_h_mm", 12.0))
+    try:
+        from openpyxl.utils import get_column_letter  # type: ignore
+    except Exception:
+        get_column_letter = None
+
+    if get_column_letter is not None:
+        col_w = _mm_to_excel_col_width(cell_w_mm)
+        for c in range(cols):
+            ws.column_dimensions[get_column_letter(c + 1)].width = float(col_w)
+
+    row_h = _mm_to_excel_row_height_points(cell_h_mm)
+    for r in range(rows):
+        ws.row_dimensions[r + 1].height = float(row_h)
+
     for r in range(rows):
         row_data = cells[r] if r < len(cells) and isinstance(cells[r], list) else []
         for c in range(cols):

@@ -27,6 +27,7 @@ from PyQt5.QtGui import (
     QMouseEvent,
     QPainter,
     QShowEvent,
+    QTextBlockFormat,
     QTextCharFormat,
     QTextCursor,
     QTextDocument,
@@ -36,6 +37,8 @@ from PyQt5.QtGui import (
 from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
+    QMessageBox,
+    QInputDialog,
     QFileDialog,
     QFrame,
     QGraphicsView,
@@ -127,6 +130,13 @@ from inkscape_wps.ui.wps_theme import WPS_ACCENT
 _logger = logging.getLogger(__name__)
 
 
+def _paragraph_align_shortcut(portable: str) -> QKeySequence:
+    """段落对齐快捷键：macOS 用 Meta（Cmd）+ 键，其它平台 Ctrl+。"""
+    if sys.platform == "darwin":
+        return QKeySequence(portable.replace("Ctrl+", "Meta+", 1))
+    return QKeySequence(portable)
+
+
 class MainWindowFluent(FluentWindow):
     """以 FluentWindow 承载的应用主窗口。"""
 
@@ -165,10 +175,16 @@ class MainWindowFluent(FluentWindow):
 
         self._nonword_undo_stack = QUndoStack(self)
         self._nonword_undo_stack.setUndoLimit(300)
-        self._nonword_undo_anchor: tuple[str, str, str] = ("", "", "")
+        self._nonword_undo_anchor: tuple[str, str, str, str] = ("", "", "", "")
         self._nonword_undo_restoring = False
+        self._shown_word_mode_tip = False
 
         self._build_pages()
+        # P1-5：页边距与三边编辑区（尤其演示页 QTextEdit）同步，避免预览/G-code 与屏显偏移。
+        try:
+            self._sync_fluent_editor_margins()
+        except Exception:
+            _logger.debug("同步编辑区页边距失败", exc_info=True)
 
         # 切换导航页时必须刷新预览：_work_paths() 按当前子页 objectName 取字/表/演示。
         # 注意：不能靠替换 _onCurrentInterfaceChanged——Qt 在首个子页加入时已把槽绑到原方法，替换实例属性不会重连信号。
@@ -195,6 +211,37 @@ class MainWindowFluent(FluentWindow):
     def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
         super().showEvent(event)
         # 勿在每次 show 里反复 activateIgnoringOtherApps_，否则 macOS Dock 会持续弹跳
+
+    def resizeEvent(self, event) -> None:  # noqa: ANN001
+        super().resizeEvent(event)
+        try:
+            self._sync_fluent_editor_margins()
+        except Exception:
+            _logger.debug("resize 同步编辑区页边距失败", exc_info=True)
+        try:
+            self._refresh_preview()
+        except Exception:
+            _logger.debug("resize 刷新预览失败", exc_info=True)
+
+    def _sync_fluent_editor_margins(self) -> None:
+        """Fluent 主窗：把 `cfg.document_margin_mm` 同步到演示页 QTextEdit 的 document margin（px）。
+
+        说明：`text_edit_to_layout_lines` 使用 `cfg.document_margin_mm` 与 QTextEdit 的布局矩形计算行基线；
+        若 QTextEdit 的 `documentMargin` 仍是旧值，会导致预览/G-code 与屏显位置偏移。
+        """
+        if not hasattr(self, "_presentation_editor"):
+            return
+
+        te = self._presentation_editor.slide_editor()
+        try:
+            vw = max(1, int(te.viewport().width()))
+            pw = max(1e-6, float(getattr(self._cfg, "page_width_mm", 1.0)))
+            m_mm = float(getattr(self._cfg, "document_margin_mm", 0.0))
+            m_px = m_mm * float(vw) / float(pw)
+        except Exception:
+            return
+
+        self._presentation_editor.set_slide_document_margin_px(m_px)
 
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001, N802
         """演示页编辑器获得焦点时刷新「撤销/重做」菜单状态（文档栈 vs 整页栈）。"""
@@ -634,7 +681,7 @@ class MainWindowFluent(FluentWindow):
         rv.addWidget(TitleLabel("快速上手"))
         desc = QLabel(
             "1. 对标 WPS 三件套：「文字」单线书写、「表格」网格、「演示」左列表+多页富文本；预览随当前页切换。\n"
-            "2. 「开始」条：剪贴板 + 字体 + B/I/U + 对齐；表格页另含「行列」快捷；演示页另含「段落」列表与缩进；表格/演示右键菜单亦可用。预览区：缩放、复制/导出 PNG；幻灯片列表：页管理。状态栏：字数/表格尺寸/页码。「视图」：预览缩放与导出。\n"
+            "2. 「开始」条：剪贴板 + 字体 + B/I/U + 对齐；表格页「行列」快捷；演示页「段落」列表/缩进 + 「样式」标题1/标题2/正文预设（随工程保存）；表格/演示右键亦可用。预览：缩放、复制/导出 PNG；幻灯片列表：页管理。状态栏：字数/表格尺寸/页码。「视图」：预览缩放与导出。\n"
             "3. 「设备」页核对 Z/进给/坐标/纸张；先导出 G-code 再小范围试写。\n"
             "4. 详见菜单或 SPEC.md。"
         )
@@ -799,6 +846,7 @@ class MainWindowFluent(FluentWindow):
         fpr.setSpacing(6)
         self._append_wps_format_bar(fpr)
         self._append_wps_slide_paragraph_buttons(fpr)
+        self._append_wps_slide_style_presets(fpr)
         fpr.addStretch(1)
         ppt_l.addWidget(fmt_ppt)
         ppt_l.addWidget(self._presentation_editor, 1)
@@ -1297,19 +1345,19 @@ class MainWindowFluent(FluentWindow):
         m_edit.addSeparator()
 
         self._act_al_left = Action(text="左对齐")
-        self._act_al_left.setShortcut(QKeySequence("Ctrl+L"))
+        self._act_al_left.setShortcut(_paragraph_align_shortcut("Ctrl+L"))
         self._act_al_left.triggered.connect(lambda: self._set_fluent_alignment(Qt.AlignLeft | Qt.AlignAbsolute))
         m_edit.addAction(self._act_al_left)
         self._act_al_center = Action(text="居中")
-        self._act_al_center.setShortcut(QKeySequence("Ctrl+E"))
+        self._act_al_center.setShortcut(_paragraph_align_shortcut("Ctrl+E"))
         self._act_al_center.triggered.connect(lambda: self._set_fluent_alignment(Qt.AlignHCenter))
         m_edit.addAction(self._act_al_center)
         self._act_al_right = Action(text="右对齐")
-        self._act_al_right.setShortcut(QKeySequence("Ctrl+R"))
+        self._act_al_right.setShortcut(_paragraph_align_shortcut("Ctrl+R"))
         self._act_al_right.triggered.connect(lambda: self._set_fluent_alignment(Qt.AlignRight | Qt.AlignAbsolute))
         m_edit.addAction(self._act_al_right)
         self._act_al_justify = Action(text="两端对齐")
-        self._act_al_justify.setShortcut(QKeySequence("Ctrl+J"))
+        self._act_al_justify.setShortcut(_paragraph_align_shortcut("Ctrl+J"))
         self._act_al_justify.triggered.connect(lambda: self._set_fluent_alignment(Qt.AlignJustify))
         m_edit.addAction(self._act_al_justify)
         m_edit.addSeparator()
@@ -1459,21 +1507,37 @@ class MainWindowFluent(FluentWindow):
             self._refresh_undo_redo_menu_state()
         except Exception:
             pass
+        # 文字模式边界提示（一次性、避免打扰；对齐 P1-3「文字页说明与引导」）。
+        try:
+            if not self._shown_word_mode_tip and self._current_page_id() == "word":
+                self._shown_word_mode_tip = True
+                InfoBar.info(
+                    "文字模式",
+                    "「文字」为单线笔画编辑：输入会映射为 Hershey/奎享字形并生成 G-code。\n"
+                    "富文本样式（如加粗/斜体/段落对齐）请切到「表格」或「演示」设置。",
+                    parent=self,
+                    position=InfoBarPosition.TOP,
+                )
+        except Exception:
+            _logger.debug("文字模式提示失败", exc_info=True)
 
-    def _capture_nonword_tuple(self) -> tuple[str, str, str]:
+    def _capture_nonword_tuple(self) -> tuple[str, str, str, str]:
         return capture_nonword_state_pyqt5(
             self._table_editor.to_project_blob(),
             self._presentation_editor.slides_storage(),
+            self._presentation_editor.master_storage(),
             serialize_vector_paths(self._sketch_paths),
         )
 
-    def _restore_nonword_state(self, state: tuple[str, str, str]) -> None:
+    def _restore_nonword_state(self, state: tuple[str, str, str, str]) -> None:
         self._nonword_undo_restoring = True
         try:
-            tb_s, sl_s, sk_s = state
+            tb_s, sl_s, sm_s, sk_s = state
             self._table_editor.from_project_blob(json.loads(tb_s))
             slides = json.loads(sl_s)
+            master = json.loads(sm_s) if sm_s else {}
             self._presentation_editor.load_slides(slides if isinstance(slides, list) else [""])
+            self._presentation_editor.load_master_storage(master if isinstance(master, dict) else {})
             self._sketch_paths = deserialize_vector_paths(json.loads(sk_s))
         finally:
             self._nonword_undo_restoring = False
@@ -1739,23 +1803,48 @@ class MainWindowFluent(FluentWindow):
         lab.setStyleSheet("color:#6b7280;font-size:11px;font-weight:600;padding-left:4px;padding-right:2px;")
         row.addWidget(lab)
 
-        def _tb(text: str, tip: str, slot) -> None:
-            b = PushButton(text)
-            b.setFixedHeight(28)
-            b.setMinimumWidth(56)
-            b.setToolTip(tip)
-            b.clicked.connect(slot)
-            row.addWidget(b)
+        btn = PushButton("插入/删除…")
+        btn.setFixedHeight(28)
+        btn.setMinimumWidth(92)
+        btn.setToolTip("打开行/列插入与删除菜单（对齐网格右键菜单；窄屏不挤占格式条宽度）。")
 
-        _tb("上方插行", "在当前行之上插入一行", self._table_editor.insert_row_above)
-        _tb("下方插行", "在当前行之下插入一行", self._table_editor.insert_row_below)
-        _tb("左侧插列", "在当前列左侧插入一列", self._table_editor.insert_column_left)
-        _tb("右侧插列", "在当前列右侧插入一列", self._table_editor.insert_column_right)
-        sep = QLabel(" │ ")
-        sep.setStyleSheet("color:#cfd6de;")
-        row.addWidget(sep)
-        _tb("删行", "删除当前行（至少保留一行）", self._table_editor.delete_current_row)
-        _tb("删列", "删除当前列（至少保留一列）", self._table_editor.delete_current_column)
+        def _open() -> None:
+            try:
+                from qfluentwidgets import RoundMenu
+            except Exception:
+                return
+            m = RoundMenu("行列", self)
+            a_ra = Action(text="在上方插入行")
+            a_ra.setToolTip("在当前行之上插入一行")
+            a_ra.triggered.connect(self._table_editor.insert_row_above)
+            m.addAction(a_ra)
+            a_rb = Action(text="在下方插入行")
+            a_rb.setToolTip("在当前行之下插入一行")
+            a_rb.triggered.connect(self._table_editor.insert_row_below)
+            m.addAction(a_rb)
+            m.addSeparator()
+            a_cl = Action(text="在左侧插入列")
+            a_cl.triggered.connect(self._table_editor.insert_column_left)
+            m.addAction(a_cl)
+            a_cr = Action(text="在右侧插入列")
+            a_cr.triggered.connect(self._table_editor.insert_column_right)
+            m.addAction(a_cr)
+            m.addSeparator()
+            tr, tc = self._table_editor.row_column_count()
+            a_dr = Action(text="删除当前行")
+            a_dr.setToolTip("至少保留一行")
+            a_dr.triggered.connect(self._table_editor.delete_current_row)
+            a_dr.setEnabled(tr > 1)
+            m.addAction(a_dr)
+            a_dc = Action(text="删除当前列")
+            a_dc.setToolTip("至少保留一列")
+            a_dc.triggered.connect(self._table_editor.delete_current_column)
+            a_dc.setEnabled(tc > 1)
+            m.addAction(a_dc)
+            m.exec_(btn.mapToGlobal(btn.rect().bottomLeft()))
+
+        btn.clicked.connect(_open)
+        row.addWidget(btn)
 
     def _append_wps_slide_paragraph_buttons(self, row: QHBoxLayout) -> None:
         """演示页格式条：项目符号、编号、缩进（与幻灯片右键一致）。"""
@@ -1763,21 +1852,110 @@ class MainWindowFluent(FluentWindow):
         lab.setStyleSheet("color:#6b7280;font-size:11px;font-weight:600;padding-left:4px;padding-right:2px;")
         row.addWidget(lab)
 
-        def _pb(text: str, tip: str, slot) -> None:
-            b = PushButton(text)
-            b.setFixedHeight(28)
-            b.setMinimumWidth(52)
-            b.setToolTip(tip)
-            b.clicked.connect(slot)
-            row.addWidget(b)
+        btn = PushButton("段落…")
+        btn.setFixedHeight(28)
+        btn.setMinimumWidth(60)
+        btn.setToolTip("打开项目符号/编号/缩进菜单（与幻灯片右键一致）。")
 
-        _pb("• 符号", "项目符号列表", lambda: self._slide_apply_list_style(QTextListFormat.ListDisc))
-        _pb("1. 编号", "编号列表", lambda: self._slide_apply_list_style(QTextListFormat.ListDecimal))
-        sep = QLabel(" │ ")
-        sep.setStyleSheet("color:#cfd6de;")
-        row.addWidget(sep)
-        _pb("减少缩进", "减少段落缩进", lambda: self._slide_change_block_indent(-1))
-        _pb("增加缩进", "增加段落缩进", lambda: self._slide_change_block_indent(1))
+        def _open() -> None:
+            try:
+                from qfluentwidgets import RoundMenu
+            except Exception:
+                return
+            m = RoundMenu("段落", self)
+            a_bul = Action(text="项目符号")
+            a_bul.setToolTip("将当前段落设为符号列表")
+            a_bul.triggered.connect(lambda: self._slide_apply_list_style(QTextListFormat.ListDisc))
+            m.addAction(a_bul)
+            a_num = Action(text="编号")
+            a_num.setToolTip("将当前段落设为编号列表")
+            a_num.triggered.connect(lambda: self._slide_apply_list_style(QTextListFormat.ListDecimal))
+            m.addAction(a_num)
+            m.addSeparator()
+            a_in = Action(text="增加缩进")
+            a_in.triggered.connect(lambda: self._slide_change_block_indent(1))
+            m.addAction(a_in)
+            a_out = Action(text="减少缩进")
+            a_out.triggered.connect(lambda: self._slide_change_block_indent(-1))
+            m.addAction(a_out)
+            m.exec_(btn.mapToGlobal(btn.rect().bottomLeft()))
+
+        btn.clicked.connect(_open)
+        row.addWidget(btn)
+
+    def _append_wps_slide_style_presets(self, row: QHBoxLayout) -> None:
+        """演示页：固定样式预设（P1-2），写入 HTML 随工程保存。"""
+        lab = QLabel("样式")
+        lab.setStyleSheet("color:#6b7280;font-size:11px;font-weight:600;padding-left:4px;padding-right:2px;")
+        row.addWidget(lab)
+
+        btn = PushButton("标题/正文…")
+        btn.setFixedHeight(28)
+        btn.setMinimumWidth(92)
+        btn.setToolTip("打开标题1/标题2/正文样式预设菜单（与右键样式一致）。")
+
+        def _open() -> None:
+            try:
+                from qfluentwidgets import RoundMenu
+            except Exception:
+                return
+            m = RoundMenu("样式", self)
+            a_h1 = Action(text="标题 1")
+            a_h1.setToolTip("20pt 加粗，段前后留白")
+            a_h1.triggered.connect(lambda: self._slide_apply_style_preset("h1"))
+            m.addAction(a_h1)
+            a_h2 = Action(text="标题 2")
+            a_h2.setToolTip("16pt 加粗")
+            a_h2.triggered.connect(lambda: self._slide_apply_style_preset("h2"))
+            m.addAction(a_h2)
+            a_body = Action(text="正文")
+            a_body.setToolTip("12pt 常规，段后留白")
+            a_body.triggered.connect(lambda: self._slide_apply_style_preset("body"))
+            m.addAction(a_body)
+            m.exec_(btn.mapToGlobal(btn.rect().bottomLeft()))
+
+        btn.clicked.connect(_open)
+        row.addWidget(btn)
+
+        theme_btn = PushButton("主题…")
+        theme_btn.setFixedHeight(28)
+        theme_btn.setMinimumWidth(64)
+        theme_btn.setToolTip("把当前字体/字号/对齐/段前后距套用到所有幻灯片正文。")
+
+        def _apply_theme() -> None:
+            if self._current_page_id() != "slides":
+                return
+            te = self._presentation_editor.slide_editor()
+            cur = te.textCursor()
+
+            # 字体/字号：从光标字符格式提取；若未显式设置则回退到编辑器当前字体
+            cf = cur.charFormat()
+            fam = (cf.fontFamily() or "").strip()
+            if not fam:
+                fam = te.currentFont().family()
+
+            pts = float(cf.fontPointSizeF() or 0.0)
+            if pts <= 0:
+                pts = float(cf.fontPointSize() or 0.0)
+            if pts <= 0:
+                pts = float(te.currentFont().pointSizeF() or te.currentFont().pointSize() or 12.0)
+
+            theme_char = QTextCharFormat()
+            theme_char.setFontFamily(fam)
+            theme_char.setFontPointSize(pts)
+
+            # 段落对齐/段距：从当前块提取
+            bf = cur.blockFormat()
+            theme_block = QTextBlockFormat()
+            theme_block.setAlignment(bf.alignment())
+            theme_block.setTopMargin(bf.topMargin())
+            theme_block.setBottomMargin(bf.bottomMargin())
+
+            self._presentation_editor.apply_theme_to_all_slides(theme_char, theme_block)
+            self._refresh_preview()
+
+        theme_btn.clicked.connect(_apply_theme)
+        row.addWidget(theme_btn)
 
     def _append_wps_clipboard_buttons(self, row: QHBoxLayout) -> None:
         """剪贴板组：与「编辑」菜单共用槽；图标贴近 Fluent/WPS 工具栏。"""
@@ -1990,6 +2168,8 @@ class MainWindowFluent(FluentWindow):
         self._refresh_preview()
 
     def _find_next(self, needle: str) -> bool:
+        if self._current_page_id() == "table":
+            return self._table_editor.find_next_in_table(needle, include_current=False)
         e = self._active_text_edit()
         if e is None:
             InfoBar.warning("查找", "当前页面不支持查找。", parent=self, position=InfoBarPosition.TOP)
@@ -2011,9 +2191,34 @@ class MainWindowFluent(FluentWindow):
         q = self._find_edit.text().strip() if hasattr(self, "_find_edit") else ""
         ok = self._find_next(q)
         if not ok and q:
-            InfoBar.info("查找", "已到文档末尾，未找到更多匹配。", parent=self, position=InfoBarPosition.TOP)
+            if self._current_page_id() == "table":
+                InfoBar.info(
+                    "查找",
+                    "已到表格末尾，未找到更多匹配。",
+                    parent=self,
+                    position=InfoBarPosition.TOP,
+                )
+            else:
+                InfoBar.info("查找", "已到文档末尾，未找到更多匹配。", parent=self, position=InfoBarPosition.TOP)
 
     def _replace_current_from_box(self) -> None:
+        if self._current_page_id() == "table":
+            q = self._find_edit.text().strip() if hasattr(self, "_find_edit") else ""
+            rep = self._replace_edit.text() if hasattr(self, "_replace_edit") else ""
+            if not q:
+                InfoBar.warning("替换", "请输入要查找的文本。", parent=self, position=InfoBarPosition.TOP)
+                return
+            ok = self._table_editor.replace_first_in_current_cell(q, rep)
+            if not ok:
+                found = self._table_editor.find_next_in_table(q, include_current=False)
+                if found:
+                    ok = self._table_editor.replace_first_in_current_cell(q, rep)
+            if not ok:
+                InfoBar.info("替换", "未找到匹配项。", parent=self, position=InfoBarPosition.TOP)
+                return
+            InfoBar.success("替换", "已替换当前匹配。", parent=self, position=InfoBarPosition.TOP)
+            return
+
         e = self._active_text_edit()
         if e is None:
             InfoBar.warning("替换", "当前页面不支持替换。", parent=self, position=InfoBarPosition.TOP)
@@ -2039,6 +2244,16 @@ class MainWindowFluent(FluentWindow):
         InfoBar.success("替换", "已替换当前匹配。", parent=self, position=InfoBarPosition.TOP)
 
     def _replace_all_from_box(self) -> None:
+        if self._current_page_id() == "table":
+            q = self._find_edit.text().strip() if hasattr(self, "_find_edit") else ""
+            rep = self._replace_edit.text() if hasattr(self, "_replace_edit") else ""
+            if not q:
+                InfoBar.warning("全部替换", "请输入要查找的文本。", parent=self, position=InfoBarPosition.TOP)
+                return
+            n = self._table_editor.replace_all_in_table(q, rep)
+            InfoBar.success("全部替换", f"已替换 {n} 处。", parent=self, position=InfoBarPosition.TOP)
+            return
+
         e = self._active_text_edit()
         if e is None:
             InfoBar.warning("全部替换", "当前页面不支持替换。", parent=self, position=InfoBarPosition.TOP)
@@ -2467,6 +2682,7 @@ class MainWindowFluent(FluentWindow):
                 word_plain_text=self._word_editor.toPlainText(),
                 table_blob=self._capture_table_blob(),
                 slides=self._capture_slides_storage(),
+                slides_master=self._presentation_editor.master_storage(),
                 sketch_blob=self._capture_sketch_blob(),
                 insert_vector=self._capture_insert_vector_blob(),
             )
@@ -2535,6 +2751,11 @@ class MainWindowFluent(FluentWindow):
                 self._word_editor.setHtml(str(d.get("word_html", "")))
             self._apply_table_blob(d.get("table") if isinstance(d.get("table"), dict) else {})
             self._apply_slides_storage(d.get("slides") if isinstance(d.get("slides"), list) else [])
+            # 母版页眉/页脚（P4-B-3），旧工程无该字段时保持空
+            try:
+                self._presentation_editor.load_master_storage(d.get("slides_master"))
+            except Exception:
+                pass
             self._apply_loaded_paths(d)
         finally:
             self._nonword_undo_restoring = False
@@ -2923,6 +3144,58 @@ class MainWindowFluent(FluentWindow):
         cur.endEditBlock()
         te.setTextCursor(cur)
 
+    def _slide_apply_style_preset(self, preset: str) -> None:
+        """当前段落应用固定样式（整段字符格式 + 段前后距），写入 HTML，随工程保存。"""
+        if self._current_page_id() != "slides":
+            return
+        te = self._presentation_editor.slide_editor()
+        cur = te.textCursor()
+        pos = cur.position()
+        cur.beginEditBlock()
+        cur.select(QTextCursor.BlockUnderCursor)
+        cf = QTextCharFormat()
+        bf = QTextBlockFormat()
+        if preset == "h1":
+            cf.setFontPointSize(20.0)
+            cf.setFontWeight(QFont.Bold)
+            bf.setTopMargin(10.0)
+            bf.setBottomMargin(10.0)
+        elif preset == "h2":
+            cf.setFontPointSize(16.0)
+            cf.setFontWeight(QFont.Bold)
+            bf.setTopMargin(6.0)
+            bf.setBottomMargin(8.0)
+        else:
+            cf.setFontPointSize(12.0)
+            cf.setFontWeight(QFont.Normal)
+            bf.setTopMargin(0.0)
+            bf.setBottomMargin(6.0)
+        cur.mergeCharFormat(cf)
+        cur.mergeBlockFormat(bf)
+        cur.setPosition(pos)
+        cur.endEditBlock()
+        te.setTextCursor(cur)
+        self._refresh_preview()
+
+    def _edit_presentation_master_text(self, which: str, current: str) -> None:
+        """P4-B-3：编辑母版页眉/页脚文本（参与预览/G-code）。"""
+        if which not in ("header", "footer"):
+            return
+        title = "母版页眉" if which == "header" else "母版页脚"
+        text, ok = QInputDialog.getText(
+            self,
+            "演示母版",
+            f"{title}（将套用到所有幻灯片；参与预览/G-code）：",
+            QLineEdit.Normal,
+            str(current or ""),
+        )
+        if not ok:
+            return
+        if which == "header":
+            self._presentation_editor.set_master_header(text)
+        else:
+            self._presentation_editor.set_master_footer(text)
+
     def _populate_wps_edit_round_menu(self, m) -> None:  # noqa: ANN001
         """填充「编辑」类 RoundMenu 项（供文字/演示与表格菜单复用）。"""
         a_u = Action(text="撤销")
@@ -2978,6 +3251,40 @@ class MainWindowFluent(FluentWindow):
         a_all.triggered.connect(self._edit_select_all)
         m.addAction(a_all)
         m.addSeparator()
+        s1 = Action(text="样式：标题 1")
+        s1.triggered.connect(lambda: self._slide_apply_style_preset("h1"))
+        m.addAction(s1)
+        s2 = Action(text="样式：标题 2")
+        s2.triggered.connect(lambda: self._slide_apply_style_preset("h2"))
+        m.addAction(s2)
+        sb = Action(text="样式：正文")
+        sb.triggered.connect(lambda: self._slide_apply_style_preset("body"))
+        m.addAction(sb)
+        m.addSeparator()
+        ms = self._presentation_editor.master_storage()
+        a_h = Action(text="母版：设置页眉")
+        a_h.setToolTip("为所有幻灯片套用页眉文本（参与预览/G-code）。")
+        a_h.triggered.connect(
+            lambda: self._edit_presentation_master_text(
+                "header",
+                ms.get("header", ""),
+            )
+        )
+        m.addAction(a_h)
+        a_f = Action(text="母版：设置页脚")
+        a_f.setToolTip("为所有幻灯片套用页脚文本（参与预览/G-code）。")
+        a_f.triggered.connect(
+            lambda: self._edit_presentation_master_text(
+                "footer",
+                ms.get("footer", ""),
+            )
+        )
+        m.addAction(a_f)
+        a_clear = Action(text="母版：清空页眉/页脚")
+        a_clear.setToolTip("清除所有幻灯片的页眉/页脚占位文本。")
+        a_clear.triggered.connect(self._presentation_editor.clear_master)
+        m.addAction(a_clear)
+        m.addSeparator()
         a_bul = Action(text="项目符号")
         a_bul.setToolTip("将当前段落设为符号列表")
         a_bul.triggered.connect(lambda: self._slide_apply_list_style(QTextListFormat.ListDisc))
@@ -3030,6 +3337,28 @@ class MainWindowFluent(FluentWindow):
         a_dc.triggered.connect(self._table_editor.delete_current_column)
         a_dc.setEnabled(tc > 1)
         m.addAction(a_dc)
+
+        m.addSeparator()
+        tw = self._table_editor.table_widget()
+        ranges = tw.selectedRanges()
+        merge_enable = False
+        if ranges:
+            rng = ranges[0]
+            rs = int(rng.bottomRow() - rng.topRow() + 1)
+            cs = int(rng.rightColumn() - rng.leftColumn() + 1)
+            merge_enable = rs > 1 or cs > 1
+        a_merge = Action(text="合并选区单元格")
+        a_merge.setToolTip("将矩形选区合并为一个单元格（保留左上角内容）。")
+        a_merge.triggered.connect(self._table_editor.merge_selected_cells)
+        a_merge.setEnabled(merge_enable)
+        m.addAction(a_merge)
+
+        ar, ac = self._table_editor.current_grid_indices()
+        a_split = Action(text="拆分当前合并")
+        a_split.setToolTip("将当前合并单元格拆分回普通格。")
+        a_split.triggered.connect(self._table_editor.split_current_merged_cell)
+        a_split.setEnabled(int(tw.rowSpan(ar, ac) or 1) > 1 or int(tw.columnSpan(ar, ac) or 1) > 1)
+        m.addAction(a_split)
         m.exec_(global_pos)
 
     def _refresh_preview(self) -> None:
@@ -3066,6 +3395,9 @@ class MainWindowFluent(FluentWindow):
 
     def _capture_slides_storage(self) -> list[str]:
         return self._presentation_editor.slides_storage()
+
+    def _capture_slides_storage_for_export(self) -> list[str]:
+        return self._presentation_editor.slides_storage_for_export()
 
     # ---------- 导出（占位） ----------
     def _export_gcode_to_file_stub(self) -> None:
@@ -3137,7 +3469,8 @@ class MainWindowFluent(FluentWindow):
         if not path:
             return
         try:
-            export_pptx(Path(path), slides=self._capture_slides_storage(), prefer_soffice=True)
+            # PPTX 导出：使用“套用母版页眉/页脚后的纯文本版本”
+            export_pptx(Path(path), slides=self._capture_slides_storage_for_export(), prefer_soffice=True)
         except OfficeExportError as e:
             InfoBar.error("导出失败", str(e), parent=self, position=InfoBarPosition.TOP)
             return
@@ -3148,7 +3481,7 @@ class MainWindowFluent(FluentWindow):
 
     def _slides_plain_to_markdown(self) -> str:
         parts: list[str] = []
-        for s in self._presentation_editor.slides_storage():
+        for s in self._capture_slides_storage_for_export():
             st = (s or "").strip()
             if not st:
                 continue
@@ -3358,6 +3691,11 @@ class MainWindowFluent(FluentWindow):
         if not self._grbl:
             InfoBar.warning("M800", "请先连接串口。", parent=self, position=InfoBarPosition.TOP)
             return
+        if not self._confirm_dangerous_action(
+            "发送 M800",
+            "即将向机床发送单条 M800。\n\n请确认 M800 在你的固件中确实作为“暂停/换纸节点”。继续吗？",
+        ):
+            return
         try:
             self._grbl.send_line_sync("M800")
             self._log_append("已发送 M800（换纸/暂停点）")
@@ -3369,6 +3707,11 @@ class MainWindowFluent(FluentWindow):
     def _paper_change_flow(self) -> None:
         """换纸流程：发送配置前缀 → M800 → 等待继续 → 发送配置后缀。"""
         if not self._grbl:
+            return
+        if not self._confirm_dangerous_action(
+            "换纸流程（前缀→M800→后缀）",
+            "即将发送“前缀 → M800 → 后缀”。\n\n到达 M800 后将停下等待你完成换纸/人工处理。\n继续吗？",
+        ):
             return
         from inkscape_wps.core.grbl import executable_gcode_lines
 
@@ -3498,6 +3841,10 @@ class MainWindowFluent(FluentWindow):
 
     def _on_device_machine_value_changed(self, *_args) -> None:
         self._sync_device_machine_widgets_to_cfg()
+        try:
+            self._sync_fluent_editor_margins()
+        except Exception:
+            _logger.debug("设备页变更后同步编辑区页边距失败", exc_info=True)
         if hasattr(self, "_word_editor"):
             self._word_editor.update()
         self._refresh_preview()
@@ -3527,8 +3874,28 @@ class MainWindowFluent(FluentWindow):
         self._log_append(f"已保存配置 {self._cfg_path}")
         InfoBar.success("已保存配置", str(self._cfg_path), parent=self, position=InfoBarPosition.TOP)
 
+    def _confirm_dangerous_action(self, title: str, text: str) -> bool:
+        """危险操作二次确认（如发送 G-code / 换纸流程继续）。"""
+        try:
+            r = QMessageBox.question(
+                self,
+                title,
+                text,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            return bool(r == QMessageBox.Yes)
+        except Exception:
+            # 若弹窗失败（极端环境），保持默认继续，避免阻塞核心功能。
+            return True
+
     def _send_gcode(self) -> None:
         if not self._grbl:
+            return
+        if not self._confirm_dangerous_action(
+            "发送 G-code",
+            "即将向机床发送当前文档生成的 G-code。\n\n请再次确认：坐标零点、抬落笔模式、纸张/工作区是否正确。\n继续吗？",
+        ):
             return
         self._sync_device_machine_widgets_to_cfg()
         g = paths_to_gcode(self._work_paths(), self._cfg, order=False)
@@ -3550,6 +3917,11 @@ class MainWindowFluent(FluentWindow):
     def _send_gcode_pause_at_m800(self) -> None:
         """发送程序，遇到第一条 M800 时停下，等待用户点击继续。"""
         if not self._grbl:
+            return
+        if not self._confirm_dangerous_action(
+            "发送（遇 M800 暂停）",
+            "将发送当前文档的 G-code，并在遇到第一条 M800 时停下等待。\n\n请确认：M800 定义与固件流程一致，且你已准备好“换纸/人工处理”。\n继续吗？",
+        ):
             return
         self._sync_device_machine_widgets_to_cfg()
         self._pending_program_after_m800 = None
@@ -3592,6 +3964,11 @@ class MainWindowFluent(FluentWindow):
         after = self._pending_program_after_m800 or []
         if not after:
             self._btn_send_resume.setEnabled(False)
+            return
+        if not self._confirm_dangerous_action(
+            "继续发送（从 M800 后）",
+            f"当前已在 M800 暂停，准备继续发送剩余 {len(after)} 行。\n\n确认换纸/人工处理已完成且机床状态正确。继续吗？",
+        ):
             return
         try:
             for ln in after:

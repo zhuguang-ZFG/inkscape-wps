@@ -58,6 +58,7 @@ def save_project_file(
     word_plain_text: str | None = None,
     table_blob: Dict[str, Any],
     slides: List[str],
+    slides_master: Dict[str, Any] | None = None,
     sketch_blob: Dict[str, Any],
     insert_vector: Dict[str, Any] | None = None,
 ) -> None:
@@ -68,6 +69,7 @@ def save_project_file(
         "word_html": word_html,
         "table": table_blob,
         "slides": slides,
+        "slides_master": slides_master or {},
         "sketch": sketch_blob,
     }
     if word_plain_text is not None:

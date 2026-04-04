@@ -99,11 +99,53 @@ def import_xlsx_to_table_blob(path: Path, *, max_rows: int = 200, max_cols: int 
         ) from e
 
     fp = _require_import_file(Path(path))
-    wb = openpyxl.load_workbook(str(fp), read_only=True, data_only=True)
+    # 注意：read_only=True 下 openpyxl 的 column_dimensions/row_dimensions 不可用，
+    # 我们需要读取列宽/行高以反推 cell_w_mm/cell_h_mm，因此这里必须使用 read_only=False。
+    wb = openpyxl.load_workbook(str(fp), read_only=False, data_only=True)
     ws = wb.active
     # 限制最大范围，避免超大表拖垮 UI
     max_r = min(int(ws.max_row or 1), int(max_rows))
     max_c = min(int(ws.max_column or 1), int(max_cols))
+
+    def _excel_col_width_to_mm(width: float) -> float:
+        # 经验公式：像素≈ (宽度*7)+5；像素(mm) = mm*96/25.4
+        px = float(width) * 7.0 + 5.0
+        return px * 25.4 / 96.0
+
+    def _excel_row_height_to_mm(height_points: float) -> float:
+        # points -> mm
+        return float(height_points) * 25.4 / 72.0
+
+    sheet_default_col_w = float(getattr(getattr(ws, "sheet_format", None), "defaultColWidth", 8.43) or 8.43)
+    sheet_default_row_h_pt = float(getattr(getattr(ws, "sheet_format", None), "defaultRowHeight", 15.0) or 15.0)
+
+    # 取行/列尺寸的平均值，作为我们应用的统一 cell_w_mm/cell_h_mm（当前表格实现不支持每列/每行独立尺寸）。
+    col_mm: list[float] = []
+    for c in range(1, max_c + 1):
+        letter = openpyxl.utils.get_column_letter(c)  # type: ignore[attr-defined]
+        w = ws.column_dimensions.get(letter).width if ws.column_dimensions.get(letter) is not None else None  # type: ignore[union-attr]
+        if w is None:
+            w = sheet_default_col_w
+        try:
+            mm = _excel_col_width_to_mm(float(w))
+        except Exception:
+            mm = _excel_col_width_to_mm(sheet_default_col_w)
+        if mm > 0:
+            col_mm.append(mm)
+    row_mm: list[float] = []
+    for r in range(1, max_r + 1):
+        h = ws.row_dimensions.get(r).height if ws.row_dimensions.get(r) is not None else None  # type: ignore[union-attr]
+        if h is None:
+            h = sheet_default_row_h_pt
+        try:
+            mm = _excel_row_height_to_mm(float(h))
+        except Exception:
+            mm = _excel_row_height_to_mm(sheet_default_row_h_pt)
+        if mm > 0:
+            row_mm.append(mm)
+
+    cell_w_mm = sum(col_mm) / len(col_mm) if col_mm else 28.0
+    cell_h_mm = sum(row_mm) / len(row_mm) if row_mm else 12.0
 
     cells: list[list[dict[str, Any]]] = []
     for r in range(1, max_r + 1):
@@ -114,8 +156,8 @@ def import_xlsx_to_table_blob(path: Path, *, max_rows: int = 200, max_cols: int 
             row.append({"text": s, "html": None})
         cells.append(row)
     return {
-        "cell_w_mm": 28.0,
-        "cell_h_mm": 12.0,
+        "cell_w_mm": float(cell_w_mm),
+        "cell_h_mm": float(cell_h_mm),
         "rows": max_r,
         "cols": max_c,
         "cells": cells,

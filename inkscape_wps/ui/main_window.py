@@ -1880,6 +1880,7 @@ class MainWindow(QMainWindow):
             slides=self._presentation_editor.slides_storage(),
             sketch_blob=sk_blob,
             insert_vector=iv,
+            slides_master=None,
         )
 
     def _save_project(self) -> bool:

@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Callable, List
 
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont, QKeyEvent, QTextDocument
+from PyQt5.QtGui import QFont, QKeyEvent, QTextCharFormat, QTextBlockFormat, QTextCursor, QTextDocument
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -126,6 +126,9 @@ class WpsPresentationEditorPyQt5(QWidget):
         self._slides: list[str] = [""]
         self._internal_slide_clipboard: str | None = None
         self._block_slide_list_sync = False
+        # P4-B-3：演示母版页眉/页脚（用于排版/预览/可选导出；不引入背景）
+        self._master_header: str = ""
+        self._master_footer: str = ""
         self._refresh_list(select_row=0)
 
     def slide_editor(self) -> QTextEdit:
@@ -323,12 +326,103 @@ class WpsPresentationEditorPyQt5(QWidget):
 
     def clear_all(self) -> None:
         self._slides = [""]
+        self._master_header = ""
+        self._master_footer = ""
         self._refresh_list(0)
         self._editor.clear()
         self.contentChanged.emit()
 
     def slides_storage(self) -> List[str]:
         return list(self._slides)
+
+    def slides_storage_for_export(self) -> List[str]:
+        """用于 PPTX 导出的“纯文本版本”，自动套用母版页眉/页脚。"""
+        out: List[str] = []
+        for stored in self._slides:
+            if not stored or not str(stored).strip():
+                base = ""
+            elif stored.lstrip().startswith("<"):
+                doc = QTextDocument()
+                doc.setHtml(stored)
+                base = doc.toPlainText()
+            else:
+                base = str(stored)
+            parts: List[str] = []
+            if self._master_header.strip():
+                parts.append(self._master_header.strip())
+            if base.strip():
+                parts.append(base.strip())
+            if self._master_footer.strip():
+                parts.append(self._master_footer.strip())
+            out.append("\n".join(parts))
+        return out
+
+    def master_storage(self) -> dict:
+        return {"header": self._master_header, "footer": self._master_footer}
+
+    def load_master_storage(self, d: dict | None) -> None:
+        d = d or {}
+        self._master_header = str(d.get("header", "") or "")
+        self._master_footer = str(d.get("footer", "") or "")
+        self.contentChanged.emit()
+
+    def set_master_header(self, header: str) -> None:
+        self._master_header = str(header or "")
+        self.contentChanged.emit()
+
+    def set_master_footer(self, footer: str) -> None:
+        self._master_footer = str(footer or "")
+        self.contentChanged.emit()
+
+    def clear_master(self) -> None:
+        self._master_header = ""
+        self._master_footer = ""
+        self.contentChanged.emit()
+
+    def apply_theme_to_all_slides(
+        self, char_fmt: QTextCharFormat, block_fmt: QTextBlockFormat
+    ) -> None:
+        """P4-B-2：把当前格式（字体/字号/对齐/段前后距）应用到所有幻灯片正文。
+
+        实现策略：
+        - 对每页 HTML/纯文本重建 QTextDocument
+        - 对整页 merge 字符格式（仅字体族/字号等）
+        - 对每个文本块 merge 段落块格式（对齐 + 段前/段后距）
+        - 输出 HTML 回填 self._slides，并触发 contentChanged（由主窗非文字栈接管撤销/重做语义）
+        """
+        row = self._list.currentRow()
+        if row < 0:
+            row = 0
+        if not self._slides:
+            return
+
+        new_slides: list[str] = []
+        for stored in self._slides:
+            doc = QTextDocument()
+            if stored and str(stored).lstrip().startswith("<"):
+                doc.setHtml(stored)
+            else:
+                doc.setPlainText(stored or "")
+
+            # 字符级：对整页字符应用（通常只影响字体族/字号，不破坏列表结构）
+            cur_all = QTextCursor(doc)
+            cur_all.select(QTextCursor.Document)
+            cur_all.mergeCharFormat(char_fmt)
+
+            # 段落级：逐块应用对齐与段前/段后距，尽量用 merge 保留缩进/列表语义
+            block = doc.firstBlock()
+            while block.isValid():
+                cur_b = QTextCursor(doc)
+                cur_b.setPosition(block.position())
+                cur_b.select(QTextCursor.BlockUnderCursor)
+                cur_b.mergeBlockFormat(block_fmt)
+                block = block.next()
+
+            new_slides.append(doc.toHtml())
+
+        self._slides = new_slides
+        self._refresh_list(select_row=min(row, len(self._slides) - 1))
+        self.contentChanged.emit()
 
     def load_slides(self, slides: List[str]) -> None:
         self._slides = list(slides) if slides else [""]
@@ -369,6 +463,22 @@ class WpsPresentationEditorPyQt5(QWidget):
                 scr.setHtml(stored)
             else:
                 scr.setPlainText(stored)
+
+            # P4-B-3：套用母版页眉/页脚到“离屏 QTextEdit”，从而影响预览/G-code。
+            if self._master_header.strip() or self._master_footer.strip():
+                doc = scr.document()
+                cur = QTextCursor(doc)
+                cur.beginEditBlock()
+                if self._master_header.strip():
+                    cur.movePosition(QTextCursor.Start)
+                    cur.insertText(self._master_header.strip())
+                    cur.insertBlock()
+                if self._master_footer.strip():
+                    cur.movePosition(QTextCursor.End)
+                    cur.insertBlock()
+                    cur.insertText(self._master_footer.strip())
+                cur.endEditBlock()
+
             scr.blockSignals(False)
             lines = text_edit_to_layout_lines(
                 scr,
