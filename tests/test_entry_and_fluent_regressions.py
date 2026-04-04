@@ -200,6 +200,12 @@ class TestFluentContextAndUndoRegression(unittest.TestCase):
         self.assertIn('a_missing = Action(text="查看缺失字符")', code)
         self.assertIn('QMessageBox.warning(', code)
 
+    def test_status_line_exposes_missing_glyph_shortcut_link(self) -> None:
+        code = Path("inkscape_wps/ui/main_window_fluent.py").read_text(encoding="utf-8")
+        self.assertIn("def _on_status_line_link_activated(self, link: str) -> None:", code)
+        self.assertIn('self._status_line.linkActivated.connect(self._on_status_line_link_activated)', code)
+        self.assertIn('href="missing-glyphs"', code)
+
     def test_table_editor_supports_grid_gcode_modes(self) -> None:
         code = Path("inkscape_wps/ui/table_editor_pyqt5.py").read_text(encoding="utf-8")
         self.assertIn('self._grid_gcode_mode.addItem("仅外框", "outer")', code)

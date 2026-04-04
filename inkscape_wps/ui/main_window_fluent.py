@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import html as html_module
 import json
 import logging
 import sys
@@ -1041,7 +1042,10 @@ class MainWindowFluent(FluentWindow):
         # 底部状态条（轻量，模仿 WPS 底部状态栏）
         self._status_line = QLabel()
         self._status_line.setObjectName("WpsStatusLine")
-        self._status_line.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._status_line.setTextFormat(Qt.RichText)
+        self._status_line.setOpenExternalLinks(False)
+        self._status_line.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self._status_line.linkActivated.connect(self._on_status_line_link_activated)
         self._status_line.setStyleSheet(
             """
             QLabel#WpsStatusLine {
@@ -3075,6 +3079,10 @@ class MainWindowFluent(FluentWindow):
             "如需完整输出，请更换/合并单线字库，或调整文档内容。",
         )
 
+    def _on_status_line_link_activated(self, link: str) -> None:
+        if str(link or "").strip() == "missing-glyphs":
+            self._show_missing_glyphs_dialog()
+
     def _current_work_paths_checked(self) -> List[VectorPath]:
         paths = self._work_paths()
         if paths:
@@ -4248,10 +4256,19 @@ class MainWindowFluent(FluentWindow):
                 runtime += f"   MPos：X{snap.mpos[0]:.2f} Y{snap.mpos[1]:.2f} Z{snap.mpos[2]:.2f}"
             if snap.last_alarm:
                 runtime += f"   告警：{snap.last_alarm}"
-        self._status_line.setText(
+        status_text = (
             f"文档：{self._doc_title}（{proj}）   页面：{page}   "
             f"预览：{int(self._preview_zoom * 100)}%   连接：{conn}{extra}{runtime}"
         )
+        if glyph_hint.startswith("缺字形："):
+            self._status_line.setText(
+                f"{html_module.escape(status_text)}   "
+                '<a href="missing-glyphs" style="color:#217346;text-decoration:none;">查看缺失字符</a>'
+            )
+            self._status_line.setToolTip("当前内容存在未覆盖字符，点击“查看缺失字符”可查看详情。")
+        else:
+            self._status_line.setText(html_module.escape(status_text))
+            self._status_line.setToolTip("")
         self._refresh_device_summary()
         self._refresh_backstage_info()
 
