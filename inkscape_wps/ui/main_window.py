@@ -257,11 +257,13 @@ class MainWindow(QMainWindow):
         m_tool = mb.addMenu("工具")
         m_tool.addAction("生成 G-code…", self._show_gcode)
         m_tool.addAction("导出 G-code 到文件…", self._export_gcode_to_file)
+        m_tool.addAction("查看缺失字符…", self._show_missing_glyphs_dialog)
 
         m_help = mb.addMenu("帮助")
         m_help.addAction("快速入门…", self._show_quick_start)
         m_help.addAction("查阅 SPEC（规格说明）…", self._open_spec_document)
         m_help.addAction("查阅 AI 提示词指南…", self._open_ai_prompts_document)
+        m_help.addAction("查看缺失字符…", self._show_missing_glyphs_dialog)
         m_help.addSeparator()
         m_help.addAction(
             "关于",
@@ -803,6 +805,9 @@ class MainWindow(QMainWindow):
         self._stack.addWidget(self._editor)
         self._stack.addWidget(self._table_editor)
         self._stack.addWidget(self._presentation_editor)
+        tw = self._table_editor.table_widget()
+        tw.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        tw.customContextMenuRequested.connect(self._open_table_context_menu)
         sheet_lay.addWidget(self._stack)
         apply_default_tab_stops(self._editor)
         self._install_editor_shortcuts()
@@ -1052,12 +1057,20 @@ class MainWindow(QMainWindow):
             plain = self._editor.toPlainText()
             chars = len(plain)
             nlines = max(1, plain.count("\n") + 1)
-            self._st_cursor.setText(f"第 {line} 行，第 {col} 列  │  {chars} 字符  │  {nlines} 行")
+            extra = self._glyph_status_hint("word")
+            self._st_cursor.setText(
+                f"第 {line} 行，第 {col} 列  │  {chars} 字符  │  {nlines} 行"
+                + (f"  │  {extra}" if extra else "")
+            )
         elif idx == 1:
             r, c = self._table_editor.row_column_count()
-            self._st_cursor.setText(f"表格  │  {r} 行 × {c} 列")
+            extra = self._glyph_status_hint("table")
+            self._st_cursor.setText(f"表格  │  {r} 行 × {c} 列" + (f"  │  {extra}" if extra else ""))
         else:
-            self._st_cursor.setText(self._presentation_editor.status_line())
+            extra = self._glyph_status_hint("slides")
+            self._st_cursor.setText(
+                self._presentation_editor.status_line() + (f"  │  {extra}" if extra else "")
+            )
         snap = self._machine_monitor.snapshot
         if self._grbl is not None:
             is_tcp = str(getattr(self._cfg, "connection_mode", "serial")) == "tcp"
@@ -1080,6 +1093,30 @@ class MainWindow(QMainWindow):
             self._act_undo.setEnabled(self._nonword_undo_stack.canUndo())
             self._act_redo.setEnabled(self._nonword_undo_stack.canRedo())
         self._refresh_machine_summary()
+
+    def _open_table_context_menu(self, pos) -> None:  # noqa: ANN001
+        tw = self._table_editor.table_widget()
+        global_pos = tw.viewport().mapToGlobal(pos)
+        menu = QMenu(self)
+        menu.addAction("上方插入行", self._table_editor.insert_row_above)
+        menu.addAction("下方插入行", self._table_editor.insert_row_below)
+        menu.addAction("左侧插入列", self._table_editor.insert_column_left)
+        menu.addAction("右侧插入列", self._table_editor.insert_column_right)
+        menu.addSeparator()
+        del_row = menu.addAction("删除当前行", self._table_editor.delete_current_row)
+        del_row.setEnabled(tw.rowCount() > 1)
+        del_col = menu.addAction("删除当前列", self._table_editor.delete_current_column)
+        del_col.setEnabled(tw.columnCount() > 1)
+        menu.addSeparator()
+        merge_enable = bool(tw.selectedRanges())
+        act_merge = menu.addAction("合并选区单元格", self._table_editor.merge_selected_cells)
+        act_merge.setEnabled(merge_enable)
+        ar, ac = self._table_editor.current_grid_indices()
+        act_split = menu.addAction("拆分当前合并", self._table_editor.split_current_merged_cell)
+        act_split.setEnabled(
+            int(tw.rowSpan(ar, ac) or 1) > 1 or int(tw.columnSpan(ar, ac) or 1) > 1
+        )
+        menu.exec(global_pos)
 
     def _refresh_machine_summary(self) -> None:
         snap = self._machine_monitor.snapshot
@@ -1325,10 +1362,96 @@ class MainWindow(QMainWindow):
     def _mm_per_px(self) -> float:
         return self._mm_per_px_for(self._editor)
 
+    def _current_content_page_id(self) -> str:
+        return {0: "word", 1: "table", 2: "slides"}.get(self._stack.currentIndex(), "word")
+
+    def _content_mode_label(self, pid: str) -> str:
+        return {"word": "文字", "table": "表格", "slides": "演示"}.get(pid, "文字")
+
+    def _current_content_plain_text_for_glyph_check(self, pid: str) -> str:
+        if pid == "table":
+            blob = self._table_editor.to_project_blob()
+            rows = blob.get("cells") or []
+            parts: list[str] = []
+            for row in rows:
+                for cell in row:
+                    text = str((cell or {}).get("text", "") or "").strip()
+                    if text:
+                        parts.append(text)
+            return "\n".join(parts)
+        if pid == "slides":
+            return "\n".join(self._presentation_editor.slides_storage())
+        return self._editor.toPlainText()
+
+    def _glyph_status_hint(self, pid: str) -> str:
+        text = self._current_content_plain_text_for_glyph_check(pid)
+        if not text.strip():
+            return ""
+        missing = self._mapper.missing_text_chars(text)
+        if not missing:
+            return "字形：完整"
+        preview = " ".join(repr(ch)[1:-1] for ch in missing[:4])
+        if len(missing) > 4:
+            preview += " ..."
+        return f"缺字形：{len(missing)}（{preview}）"
+
+    def _show_missing_glyphs_dialog(self) -> None:
+        pid = self._current_content_page_id()
+        source = self._content_mode_label(pid)
+        text = self._current_content_plain_text_for_glyph_check(pid)
+        if not text.strip():
+            QMessageBox.information(self, "缺失字符检查", f"当前“{source}”没有可检查的文本内容。")
+            return
+        missing = self._mapper.missing_text_chars(text)
+        if not missing:
+            QMessageBox.information(
+                self,
+                "缺失字符检查",
+                f"当前“{source}”内容的字形覆盖完整，可以继续生成预览或 G-code。",
+            )
+            return
+        QMessageBox.warning(
+            self,
+            "缺失字符检查",
+            f"当前“{source}”存在 {len(missing)} 个未覆盖字符：\n\n{' '.join(missing)}\n\n"
+            "这些字符可能不会出现在预览或 G-code 中。"
+            "如需完整输出，请更换/合并单线字库，或调整文档内容。",
+        )
+
+    def _current_work_paths_checked(self) -> List[VectorPath]:
+        paths = self._work_paths()
+        if paths:
+            return paths
+        pid = self._current_content_page_id()
+        source = self._content_mode_label(pid)
+        glyph_hint = self._glyph_status_hint(pid)
+        glyph_extra = f" {glyph_hint}。" if glyph_hint.startswith("缺字形：") else ""
+        raise ValueError(
+            f"当前“{source}”没有可导出的笔画路径。请先输入内容，或检查字库/表格/演示内容是否为空。{glyph_extra}"
+        )
+
+    def _build_job_summary(self, paths: List[VectorPath]) -> str:
+        pid = self._current_content_page_id()
+        source = self._content_mode_label(pid)
+        glyph_hint = self._glyph_status_hint(pid)
+        summary = (
+            f"来源：{source}\n"
+            f"路径段：{len(paths)}，点数：{sum(len(vp.points) for vp in paths)}\n"
+            f"纸张：{float(self._cfg.page_width_mm):.1f} × {float(self._cfg.page_height_mm):.1f} mm"
+        )
+        if glyph_hint.startswith("缺字形："):
+            summary += f"\n注意：{glyph_hint}"
+        return summary
+
     def _current_paths(self) -> List[VectorPath]:
         idx = self._stack.currentIndex()
         if idx == 1:
             lines = self._table_editor.to_layout_lines(self._mm_per_px())
+            return map_document_lines(
+                self._mapper,
+                lines,
+                mm_per_pt=self._cfg.mm_per_pt,
+            ) + list(self._table_editor.to_grid_paths())
         elif idx == 2:
             lines = self._presentation_editor.to_layout_lines_all_slides(
                 mm_per_px_resolver=self._mm_per_px_for,
@@ -2124,10 +2247,15 @@ class MainWindow(QMainWindow):
 
     def _show_gcode(self) -> None:
         self._sync_cfg_widgets()
-        g = paths_to_gcode(self._work_paths(), self._cfg, order=False)
+        try:
+            paths = self._current_work_paths_checked()
+        except ValueError as e:
+            QMessageBox.warning(self, "G-code", str(e))
+            return
+        g = paths_to_gcode(paths, self._cfg, order=False)
         dlg = QMessageBox(self)
         dlg.setWindowTitle("G-code")
-        dlg.setText("当前程序（可复制）；亦可「导出 G-code 到文件」。")
+        dlg.setText(self._build_job_summary(paths) + "\n\n当前程序（可复制）；亦可「导出 G-code 到文件」。")
         dlg.setDetailedText(g)
         dlg.exec()
 
@@ -2141,13 +2269,21 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
-        g = paths_to_gcode(self._work_paths(), self._cfg, order=False)
+        try:
+            paths = self._current_work_paths_checked()
+        except ValueError as e:
+            QMessageBox.warning(self, "导出 G-code", str(e))
+            return
+        g = paths_to_gcode(paths, self._cfg, order=False)
         try:
             write_text_atomic(Path(path), g)
         except OSError as e:
             QMessageBox.warning(self, "导出 G-code", str(e))
             return
-        self.statusBar().showMessage(f"已导出 {Path(path).name}", 4000)
+        self.statusBar().showMessage(
+            f"已导出 {Path(path).name}  │  {self._build_job_summary(paths).replace(chr(10), '  │  ')}",
+            5000,
+        )
 
     def _log_append(self, s: str) -> None:
         self._log.appendPlainText(s)
@@ -2297,7 +2433,12 @@ class MainWindow(QMainWindow):
         if not self._grbl:
             return
         self._sync_cfg_widgets()
-        g = paths_to_gcode(self._work_paths(), self._cfg, order=False)
+        try:
+            paths = self._current_work_paths_checked()
+        except ValueError as e:
+            QMessageBox.warning(self, "发送", str(e))
+            return
+        g = paths_to_gcode(paths, self._cfg, order=False)
         try:
             self._set_job_status("发送中", 0, len([ln for ln in g.splitlines() if ln.strip()]))
             n_ok, n_tot = self._grbl.send_program(
@@ -2309,7 +2450,10 @@ class MainWindow(QMainWindow):
             self._resume_checkpoint_btn.setEnabled(False)
             self._set_job_status("已完成", n_ok, n_tot)
             self._log_append(f"已发送 {n_ok}/{n_tot} 行")
-            self.statusBar().showMessage(f"G-code 已发送 {n_ok} 行", 5000)
+            self.statusBar().showMessage(
+                f"G-code 已发送 {n_ok} 行  │  {self._build_job_summary(paths).replace(chr(10), '  │  ')}",
+                5000,
+            )
         except GrblSendError as e:
             self._set_job_status("失败", e.acked_count or 0, e.total_count or 0)
             QMessageBox.warning(self, "GRBL 发送失败", str(e))

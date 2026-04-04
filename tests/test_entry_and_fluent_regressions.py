@@ -46,6 +46,36 @@ class TestFluentDocStatsRegression(unittest.TestCase):
         self.assertNotIn("self._table_widget", code)
 
 
+class TestLegacyMainWindowParityRegression(unittest.TestCase):
+    def test_legacy_main_window_appends_table_grid_paths(self) -> None:
+        code = Path("inkscape_wps/ui/main_window.py").read_text(encoding="utf-8")
+        self.assertIn(") + list(self._table_editor.to_grid_paths())", code)
+
+    def test_legacy_main_window_checks_missing_glyphs_before_export_and_send(self) -> None:
+        code = Path("inkscape_wps/ui/main_window.py").read_text(encoding="utf-8")
+        self.assertIn("def _current_work_paths_checked(self) -> List[VectorPath]:", code)
+        self.assertIn("def _build_job_summary(self, paths: List[VectorPath]) -> str:", code)
+        self.assertIn('m_tool.addAction("查看缺失字符…", self._show_missing_glyphs_dialog)', code)
+        self.assertIn('m_help.addAction("查看缺失字符…", self._show_missing_glyphs_dialog)', code)
+
+    def test_legacy_main_window_table_context_menu_matches_core_actions(self) -> None:
+        code = Path("inkscape_wps/ui/main_window.py").read_text(encoding="utf-8")
+        self.assertIn("tw.customContextMenuRequested.connect(self._open_table_context_menu)", code)
+        self.assertIn("def _open_table_context_menu(self, pos) -> None:", code)
+        self.assertIn('menu.addAction("合并选区单元格", self._table_editor.merge_selected_cells)', code)
+        self.assertIn('menu.addAction("拆分当前合并", self._table_editor.split_current_merged_cell)', code)
+
+    def test_legacy_table_editor_supports_grid_gcode_modes(self) -> None:
+        code = Path("inkscape_wps/ui/table_editor.py").read_text(encoding="utf-8")
+        self.assertIn('self._grid_gcode_mode.addItem("仅外框", "outer")', code)
+        self.assertIn("def to_grid_paths(self) -> List[VectorPath]:", code)
+        self.assertIn("def merge_selected_cells(self) -> None:", code)
+        self.assertIn("def insert_row_above(self) -> None:", code)
+        self.assertIn("def delete_current_column(self) -> None:", code)
+        self.assertIn('if (r, c) in covered and (r, c) not in anchor_cells:', code)
+        self.assertIn('"spans": spans,', code)
+
+
 class TestFluentNonWordUndoRegression(unittest.TestCase):
     def test_insert_vector_blob_is_captured_in_nonword_state(self) -> None:
         from inkscape_wps.ui.nonword_undo_pyqt5 import capture_nonword_state_pyqt5

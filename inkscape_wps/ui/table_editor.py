@@ -11,6 +11,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCharFormat, QTextCursor, QTextDocument
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
@@ -22,6 +24,7 @@ from PyQt6.QtWidgets import (
 )
 
 from inkscape_wps.core.config import MachineConfig
+from inkscape_wps.core.types import Point, VectorPath
 from inkscape_wps.ui.document_bridge import html_fragment_to_layout_lines
 
 # 单元格内富文本（与 document_bridge.LayoutLine 兼容的元组形式）
@@ -63,6 +66,13 @@ class WpsTableEditor(QWidget):
         self._spin_ch.setDecimals(1)
         self._spin_ch.valueChanged.connect(self._emit_changed)
         bar.addWidget(self._spin_ch)
+        bar.addWidget(QLabel("网格线"))
+        self._grid_gcode_mode = QComboBox()
+        self._grid_gcode_mode.addItem("不导出", "none")
+        self._grid_gcode_mode.addItem("仅外框", "outer")
+        self._grid_gcode_mode.addItem("全部网格", "all")
+        self._grid_gcode_mode.currentIndexChanged.connect(self._emit_changed)
+        bar.addWidget(self._grid_gcode_mode)
         bar.addStretch(1)
 
         self._btn_add_row = QPushButton("+ 行")
@@ -81,6 +91,8 @@ class WpsTableEditor(QWidget):
 
         self._table = QTableWidget(4, 4)
         self._table.setAlternatingRowColors(True)
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.ContiguousSelection)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self._table.itemChanged.connect(self._on_item_changed)
         root.addWidget(self._table, stretch=1)
 
@@ -120,11 +132,148 @@ class WpsTableEditor(QWidget):
     def apply_document_font(self, font: QFont) -> None:
         self._table.setFont(font)
 
+    def table_widget(self) -> QTableWidget:
+        return self._table
+
+    def _span_anchors(self) -> List[Tuple[int, int, int, int]]:
+        rows = self._table.rowCount()
+        cols = self._table.columnCount()
+        out: List[Tuple[int, int, int, int]] = []
+        covered: set[Tuple[int, int]] = set()
+        for r in range(rows):
+            for c in range(cols):
+                if (r, c) in covered:
+                    continue
+                rs = int(self._table.rowSpan(r, c) or 1)
+                cs = int(self._table.columnSpan(r, c) or 1)
+                if rs > 1 or cs > 1:
+                    out.append((r, c, rs, cs))
+                    for rr in range(r, r + rs):
+                        for cc in range(c, c + cs):
+                            covered.add((rr, cc))
+        return out
+
+    def _span_covered_cells(self) -> Tuple[set[Tuple[int, int]], set[Tuple[int, int]]]:
+        covered: set[Tuple[int, int]] = set()
+        anchors: set[Tuple[int, int]] = set()
+        for r, c, rs, cs in self._span_anchors():
+            anchors.add((r, c))
+            for rr in range(r, r + rs):
+                for cc in range(c, c + cs):
+                    covered.add((rr, cc))
+        return covered, anchors
+
+    def _span_anchor_of(self, r: int, c: int) -> Tuple[int, int]:
+        if r < 0 or c < 0:
+            return r, c
+        for ar, ac, rs, cs in self._span_anchors():
+            if ar <= r < ar + rs and ac <= c < ac + cs:
+                return ar, ac
+        return r, c
+
+    def current_grid_indices(self) -> Tuple[int, int]:
+        r = self._table.currentRow()
+        c = self._table.currentColumn()
+        if r < 0:
+            r = max(0, self._table.rowCount() - 1)
+        if c < 0:
+            c = max(0, self._table.columnCount() - 1)
+        return self._span_anchor_of(r, c)
+
+    def merge_selected_cells(self) -> None:
+        ranges = self._table.selectedRanges()
+        if not ranges:
+            return
+        rng = ranges[0]
+        top = int(rng.topRow())
+        left = int(rng.leftColumn())
+        bottom = int(rng.bottomRow())
+        right = int(rng.rightColumn())
+        rowspan = bottom - top + 1
+        colspan = right - left + 1
+        if rowspan <= 1 and colspan <= 1:
+            return
+        for ar, ac, rs, cs in self._span_anchors():
+            if not (ar + rs - 1 < top or ar > bottom or ac + cs - 1 < left or ac > right):
+                self._table.removeSpan(ar, ac)
+        anchor_item = self._table.item(top, left)
+        if anchor_item is None:
+            anchor_item = QTableWidgetItem("")
+            self._table.setItem(top, left, anchor_item)
+        self._suspend_item_sync = True
+        try:
+            self._table.setSpan(top, left, rowspan, colspan)
+            for r in range(top, bottom + 1):
+                for c in range(left, right + 1):
+                    if r == top and c == left:
+                        continue
+                    it = self._table.item(r, c)
+                    if it is None:
+                        it = QTableWidgetItem("")
+                        self._table.setItem(r, c, it)
+                    it.setText("")
+                    it.setData(self.ROLE_HTML, "")
+        finally:
+            self._suspend_item_sync = False
+        self._emit_changed()
+
+    def split_current_merged_cell(self) -> None:
+        r, c = self.current_grid_indices()
+        rs = int(self._table.rowSpan(r, c) or 1)
+        cs = int(self._table.columnSpan(r, c) or 1)
+        if rs <= 1 and cs <= 1:
+            return
+        self._table.removeSpan(r, c)
+        self._emit_changed()
+
+    def insert_row_above(self) -> None:
+        r, _ = self.current_grid_indices()
+        self._table.insertRow(r)
+        self._emit_changed()
+
+    def insert_row_below(self) -> None:
+        r, _ = self.current_grid_indices()
+        self._table.insertRow(r + 1)
+        self._emit_changed()
+
+    def insert_column_left(self) -> None:
+        _, c = self.current_grid_indices()
+        self._table.insertColumn(c)
+        self._emit_changed()
+
+    def insert_column_right(self) -> None:
+        _, c = self.current_grid_indices()
+        self._table.insertColumn(c + 1)
+        self._emit_changed()
+
+    def delete_current_row(self) -> None:
+        if self._table.rowCount() <= 1:
+            return
+        r, _ = self.current_grid_indices()
+        r = max(0, min(r, self._table.rowCount() - 1))
+        self._table.removeRow(r)
+        self._emit_changed()
+
+    def delete_current_column(self) -> None:
+        if self._table.columnCount() <= 1:
+            return
+        _, c = self.current_grid_indices()
+        c = max(0, min(c, self._table.columnCount() - 1))
+        self._table.removeColumn(c)
+        self._emit_changed()
+
     def select_all(self) -> None:
         self._table.selectAll()
 
     def row_column_count(self) -> Tuple[int, int]:
         return self._table.rowCount(), self._table.columnCount()
+
+    def grid_gcode_mode(self) -> str:
+        mode = str(self._grid_gcode_mode.currentData() or "none")
+        return mode if mode in ("none", "outer", "all") else "none"
+
+    def include_grid_lines_in_gcode(self) -> bool:
+        return self.grid_gcode_mode() != "none"
 
     def clear_all(self) -> None:
         self._table.clear()
@@ -263,6 +412,7 @@ class WpsTableEditor(QWidget):
 
         rows = self._table.rowCount()
         cols = self._table.columnCount()
+        covered, anchor_cells = self._span_covered_cells()
         out: List[LayoutLineUnion] = []
 
         for r in range(rows):
@@ -271,7 +421,11 @@ class WpsTableEditor(QWidget):
                 raw = (it.text() if it is not None else "").strip()
                 if not raw:
                     continue
+                if (r, c) in covered and (r, c) not in anchor_cells:
+                    continue
                 html = self._cell_html(it)
+                rs = int(self._table.rowSpan(r, c) or 1)
+                cs = int(self._table.columnSpan(r, c) or 1)
                 cell_left = m + c * cw + 0.5
                 cell_top = m + r * ch
                 lines = html_fragment_to_layout_lines(
@@ -279,8 +433,8 @@ class WpsTableEditor(QWidget):
                     self._cfg,
                     cell_left_mm=cell_left,
                     cell_top_from_page_top_mm=cell_top,
-                    cell_width_mm=max(cw - 1.0, 2.0),
-                    cell_height_mm=ch * 0.95,
+                    cell_width_mm=max(cw * cs - 1.0, 2.0),
+                    cell_height_mm=ch * rs * 0.95,
                     mm_per_px_x=mm_per_px,
                     default_pt=pt,
                 )
@@ -288,13 +442,89 @@ class WpsTableEditor(QWidget):
 
         return out
 
+    def to_grid_paths(self) -> List[VectorPath]:
+        mode = self.grid_gcode_mode()
+        if mode == "none":
+            return []
+
+        m = float(self._cfg.document_margin_mm)
+        cw = float(self._spin_cw.value())
+        ch = float(self._spin_ch.value())
+        rows = self._table.rowCount()
+        cols = self._table.columnCount()
+        if rows <= 0 or cols <= 0:
+            return []
+
+        page_h = float(self._cfg.page_height_mm)
+
+        def _norm(
+            a: tuple[float, float], b: tuple[float, float]
+        ) -> tuple[tuple[float, float], tuple[float, float]]:
+            return (a, b) if a <= b else (b, a)
+
+        if mode == "outer":
+            left = m
+            right = m + cols * cw
+            top = m
+            bottom = m + rows * ch
+            y_top = page_h - top
+            y_bottom = page_h - bottom
+            edges = (
+                ((left, y_top), (right, y_top)),
+                ((right, y_top), (right, y_bottom)),
+                ((left, y_bottom), (right, y_bottom)),
+                ((left, y_bottom), (left, y_top)),
+            )
+            out: List[VectorPath] = []
+            for a, b in edges:
+                na, nb = _norm(a, b)
+                out.append(VectorPath((Point(na[0], na[1]), Point(nb[0], nb[1]))))
+            return out
+
+        segments: set[tuple[tuple[float, float], tuple[float, float]]] = set()
+        covered, anchor_cells = self._span_covered_cells()
+        for r in range(rows):
+            for c in range(cols):
+                if (r, c) in covered and (r, c) not in anchor_cells:
+                    continue
+                rs = int(self._table.rowSpan(r, c) or 1)
+                cs = int(self._table.columnSpan(r, c) or 1)
+                left = m + c * cw
+                right = m + (c + cs) * cw
+                top = m + r * ch
+                bottom = m + (r + rs) * ch
+                y_top = page_h - top
+                y_bottom = page_h - bottom
+                for a, b in (
+                    ((left, y_top), (right, y_top)),
+                    ((right, y_top), (right, y_bottom)),
+                    ((left, y_bottom), (right, y_bottom)),
+                    ((left, y_bottom), (left, y_top)),
+                ):
+                    segments.add(_norm(a, b))
+
+        return [
+            VectorPath((Point(ax, ay), Point(bx, by)))
+            for (ax, ay), (bx, by) in sorted(segments)
+        ]
+
     def to_project_blob(self) -> Dict[str, Any]:
         rows, cols = self.row_column_count()
+        anchors_info = self._span_anchors()
+        covered, anchor_cells = self._span_covered_cells()
+        spans = [
+            {"r": int(r), "c": int(c), "rowspan": int(rs), "colspan": int(cs)}
+            for r, c, rs, cs in anchors_info
+            if rs > 1 or cs > 1
+        ]
         cells: List[List[Dict[str, Any]]] = []
         for r in range(rows):
             row: List[Dict[str, Any]] = []
             for c in range(cols):
                 it = self._table.item(r, c)
+                if (r, c) in covered and (r, c) not in anchor_cells:
+                    row.append({"text": "", "html": None})
+                    continue
                 row.append(
                     {
                         "text": it.text() if it else "",
@@ -305,9 +535,12 @@ class WpsTableEditor(QWidget):
         return {
             "cell_w_mm": self._spin_cw.value(),
             "cell_h_mm": self._spin_ch.value(),
+            "include_grid_lines": self.include_grid_lines_in_gcode(),
+            "grid_gcode_mode": self.grid_gcode_mode(),
             "rows": rows,
             "cols": cols,
             "cells": cells,
+            "spans": spans,
         }
 
     def from_project_blob(self, blob: Dict[str, Any]) -> None:
@@ -315,6 +548,11 @@ class WpsTableEditor(QWidget):
         try:
             self._spin_cw.setValue(float(blob.get("cell_w_mm", 28.0)))
             self._spin_ch.setValue(float(blob.get("cell_h_mm", 12.0)))
+            mode = str(blob.get("grid_gcode_mode", "") or "").strip().lower()
+            if mode not in ("none", "outer", "all"):
+                mode = "all" if bool(blob.get("include_grid_lines", False)) else "none"
+            idx = max(0, self._grid_gcode_mode.findData(mode))
+            self._grid_gcode_mode.setCurrentIndex(idx)
             rows = int(blob.get("rows", 4))
             cols = int(blob.get("cols", 4))
             rows = max(1, rows)
@@ -333,6 +571,16 @@ class WpsTableEditor(QWidget):
                     if isinstance(h, str) and h.strip():
                         item.setData(self.ROLE_HTML, h)
                     self._table.setItem(r, c, item)
+            for sp in blob.get("spans") or []:
+                try:
+                    ar = int(sp.get("r", 0))
+                    ac = int(sp.get("c", 0))
+                    rs = max(1, int(sp.get("rowspan", 1)))
+                    cs = max(1, int(sp.get("colspan", 1)))
+                except Exception:
+                    continue
+                if rs > 1 or cs > 1:
+                    self._table.setSpan(ar, ac, rs, cs)
         finally:
             self._suspend_item_sync = False
         self._emit_changed()
