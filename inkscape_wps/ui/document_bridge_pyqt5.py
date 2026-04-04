@@ -29,6 +29,14 @@ def _font_layout_key(font: QFont) -> tuple:
     return (font.family(), round(ps, 3), int(font.weight()), bool(font.italic()))
 
 
+def _char_run_layout_key(doc: QTextDocument, pos: int) -> tuple:
+    """Run 分组键：字体 + 删除线（修订「删除」痕迹不进入 LayoutLine / G-code）。"""
+    cur = QTextCursor(doc)
+    cur.setPosition(pos)
+    cf = cur.charFormat()
+    return (_font_layout_key(cf.font()), bool(cf.fontStrikeOut()))
+
+
 def apply_default_tab_stops(editor: QTextEdit, *, n_spaces: float = 4.0) -> None:
     fm = editor.fontMetrics()
     sp = max(1, fm.horizontalAdvance(" "))
@@ -77,15 +85,18 @@ def text_edit_to_layout_lines(
             while j < tlen:
                 pos0 = line_start + j
                 cur.setPosition(pos0)
-                tf0 = cur.charFormat().font()
-                key0 = _font_layout_key(tf0)
+                key0 = _char_run_layout_key(doc, pos0)
                 j_end = j + 1
                 while j_end < tlen:
-                    cur.setPosition(line_start + j_end)
-                    if _font_layout_key(cur.charFormat().font()) != key0:
+                    if _char_run_layout_key(doc, line_start + j_end) != key0:
                         break
                     j_end += 1
 
+                if key0[1]:
+                    j = j_end
+                    continue
+
+                tf0 = cur.charFormat().font()
                 pt = float(tf0.pointSizeF() if tf0.pointSizeF() > 0 else tf0.pointSize() or 12)
                 if pt <= 0:
                     pt = 12.0
