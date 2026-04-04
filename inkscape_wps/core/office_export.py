@@ -95,7 +95,7 @@ def export_docx(
     try:
         from docx import Document  # type: ignore
         from docx.enum.text import WD_ALIGN_PARAGRAPH  # type: ignore
-    except Exception as e:
+    except ImportError as e:
         raise OfficeExportError("缺少依赖：请安装 `python-docx` 后再导出 DOCX。") from e
 
     doc = Document()
@@ -120,16 +120,19 @@ def export_docx(
                     from docx.shared import Pt  # type: ignore
 
                     run.font.size = Pt(float(r.font_pt))
-                except Exception:
+                except ImportError:
                     pass
     path.parent.mkdir(parents=True, exist_ok=True)
-    doc.save(str(path))
+    try:
+        doc.save(str(path))
+    except OSError as e:
+        raise OfficeExportError(f"DOCX 写入失败：{path.name}") from e
 
 
 def export_xlsx(path: Path, *, table_blob: Dict[str, Any], prefer_soffice: bool = False) -> None:
     try:
         import openpyxl  # type: ignore
-    except Exception as e:
+    except ImportError as e:
         # A 路：若有 soffice，可先写 CSV 再转 XLSX（对 WPS 兼容较稳）
         if prefer_soffice and has_soffice():
             with tempfile.TemporaryDirectory(prefix="inkscape-wps-xlsx-") as td:
@@ -178,7 +181,7 @@ def export_xlsx(path: Path, *, table_blob: Dict[str, Any], prefer_soffice: bool 
     cell_h_mm = float(table_blob.get("cell_h_mm", 12.0))
     try:
         from openpyxl.utils import get_column_letter  # type: ignore
-    except Exception:
+    except ImportError:
         get_column_letter = None
 
     if get_column_letter is not None:
@@ -196,7 +199,10 @@ def export_xlsx(path: Path, *, table_blob: Dict[str, Any], prefer_soffice: bool 
             cell = row_data[c] if c < len(row_data) and isinstance(row_data[c], dict) else {}
             ws.cell(row=r + 1, column=c + 1).value = str(cell.get("text", "") or "")
     path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(str(path))
+    try:
+        wb.save(str(path))
+    except OSError as e:
+        raise OfficeExportError(f"XLSX 写入失败：{path.name}") from e
 
 
 def export_pptx(path: Path, *, slides: List[str], prefer_soffice: bool = False) -> None:
@@ -205,7 +211,7 @@ def export_pptx(path: Path, *, slides: List[str], prefer_soffice: bool = False) 
     try:
         from pptx import Presentation  # type: ignore
         from pptx.util import Inches, Pt  # type: ignore
-    except Exception as e:
+    except ImportError as e:
         raise OfficeExportError("缺少依赖：请安装 `python-pptx` 后再导出 PPTX。") from e
 
     prs = Presentation()
@@ -233,10 +239,13 @@ def export_pptx(path: Path, *, slides: List[str], prefer_soffice: bool = False) 
             p.text = ln
             try:
                 p.font.size = Pt(20)
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
                 pass
     path.parent.mkdir(parents=True, exist_ok=True)
-    prs.save(str(path))
+    try:
+        prs.save(str(path))
+    except OSError as e:
+        raise OfficeExportError(f"PPTX 写入失败：{path.name}") from e
 
 
 def export_markdown(path: Path, *, body: str) -> None:
