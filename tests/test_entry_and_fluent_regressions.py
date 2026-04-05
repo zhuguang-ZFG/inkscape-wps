@@ -167,6 +167,31 @@ class TestFluentContextAndUndoRegression(unittest.TestCase):
         self.assertIn('elif name == "table":', code)
         self.assertIn("body = self._table_plain_to_markdown()", code)
 
+    def test_project_save_and_open_include_render_modes(self) -> None:
+        code = Path("inkscape_wps/ui/main_window_fluent.py").read_text(encoding="utf-8")
+        project_code = Path("inkscape_wps/core/project_io.py").read_text(encoding="utf-8")
+        self.assertIn("def _capture_render_modes(self) -> dict:", code)
+        self.assertIn("def _apply_render_modes(self, data: dict | None) -> None:", code)
+        self.assertIn("render_modes=self._capture_render_modes()", code)
+        self.assertIn('self._apply_render_modes(d.get("render_modes"))', code)
+        self.assertIn('f" 当前模式：文字 {self._word_render_mode_label()}，"', code)
+        self.assertIn('f"表格 {self._table_render_mode_label()}，演示 {self._slides_render_mode_label()}。"', code)
+        self.assertIn("render_modes: Dict[str, Any] | None = None,", project_code)
+        self.assertIn('"render_modes": render_modes or {},', project_code)
+        self.assertIn('d["render_modes"] = {}', project_code)
+
+    def test_office_export_success_messages_explain_scope(self) -> None:
+        code = Path("inkscape_wps/ui/main_window_fluent.py").read_text(encoding="utf-8")
+        self.assertIn("def _office_export_tip(self, target_name: str) -> str:", code)
+        self.assertIn("DOCX 将按整套", code)
+        self.assertIn("PPTX 将按", code)
+        self.assertIn("XLSX 将按", code)
+        self.assertIn('return f"{target_name} 将按当前“{source}”内容导出。"', code)
+        self.assertIn("f\"DOCX 已生成：{Path(path).name}。{self._office_export_tip('DOCX')}\"", code)
+        self.assertIn("f\"XLSX 已生成：{Path(path).name}。{self._office_export_tip('XLSX')}\"", code)
+        self.assertIn("f\"PPTX 已生成：{Path(path).name}。{self._office_export_tip('PPTX')}\"", code)
+        self.assertIn("f\"Markdown 已生成：{Path(path).name}。{self._office_export_tip('Markdown')}\"", code)
+
     def test_gcode_export_and_send_use_checked_work_paths_and_job_summary(self) -> None:
         code = Path("inkscape_wps/ui/main_window_fluent.py").read_text(encoding="utf-8")
         self.assertIn("def _current_work_paths_checked(self) -> List[VectorPath]:", code)
@@ -181,6 +206,9 @@ class TestFluentContextAndUndoRegression(unittest.TestCase):
         self.assertIn("def _docx_export_payload(self) -> tuple[List[DocParagraph], str | None]:", code)
         self.assertIn("paragraphs, src_html = self._docx_export_payload()", code)
         self.assertIn('if name == "table":', code)
+        self.assertIn('if name == "slides":', code)
+        self.assertIn("return self._slides_docx_paragraphs(), None", code)
+        self.assertIn("def _slides_docx_paragraphs(self) -> List[DocParagraph]:", code)
         self.assertIn(
             "return self._docx_paragraphs_from_editor_widget(self._word_editor), self._word_editor.toHtml()",
             code,

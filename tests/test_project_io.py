@@ -71,6 +71,7 @@ class TestProjectIo(unittest.TestCase):
                 table_blob=self._TABLE_BLOB,
                 slides=["<p>s</p>"],
                 slides_master={},
+                render_modes={"word": "outline", "table": "stroke", "slides": "outline"},
                 sketch_blob={},
                 insert_vector=None,
             )
@@ -78,6 +79,10 @@ class TestProjectIo(unittest.TestCase):
             self.assertEqual(d["title"], "测试")
             self.assertEqual(d["version"], FORMAT_VERSION)
             self.assertIn("word_html", d)
+            self.assertEqual(
+                d["render_modes"],
+                {"word": "outline", "table": "stroke", "slides": "outline"},
+            )
             data = json.loads(p.read_text(encoding="utf-8"))
             self.assertEqual(data["format"], FORMAT_ID)
 

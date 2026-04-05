@@ -62,6 +62,7 @@ def save_project_file(
     table_blob: Dict[str, Any],
     slides: List[str],
     slides_master: Dict[str, Any] | None = None,
+    render_modes: Dict[str, Any] | None = None,
     sketch_blob: Dict[str, Any],
     insert_vector: Dict[str, Any] | None = None,
 ) -> None:
@@ -73,6 +74,7 @@ def save_project_file(
         "table": table_blob,
         "slides": slides,
         "slides_master": slides_master or {},
+        "render_modes": render_modes or {},
         "sketch": sketch_blob,
     }
     if word_plain_text is not None:
@@ -117,6 +119,8 @@ def load_project_file(path: Path | str) -> Dict[str, Any]:
     if not isinstance(d, dict):
         raise ValueError("工程文件格式错误")
     validate_project_header(d)
+    if not isinstance(d.get("render_modes"), dict):
+        d["render_modes"] = {}
     if "word_plain_text" not in d:
         raw_html = str(d.get("word_html", ""))
         text = raw_html.replace("<br/>", "\n").replace("<br>", "\n").replace("</p>", "\n")

@@ -592,6 +592,34 @@ class MainWindowFluent(FluentWindow):
             return self._render_mode_tip(getattr(self._cfg, "slides_render_mode", "stroke"))
         return self._render_mode_tip(getattr(self._cfg, "word_render_mode", "stroke"))
 
+    def _office_export_tip(self, target_name: str) -> str:
+        pid = self._current_content_page_id()
+        source = self._content_mode_label(pid)
+        if target_name == "PPTX":
+            count = 0
+            try:
+                count = self._presentation_editor.slide_count()
+            except Exception:
+                count = 0
+            return f"PPTX 将按“{source}”内容导出，当前共 {max(1, count)} 页，并套用母版页眉/页脚。"
+        if target_name == "XLSX":
+            rows = cols = 0
+            try:
+                rows, cols = self._table_editor.row_column_count()
+            except Exception:
+                rows = cols = 0
+            return f"XLSX 将按“{source}”内容导出，当前表格为 {max(1, rows)} × {max(1, cols)}。"
+        if target_name == "DOCX":
+            if pid == "slides":
+                count = 0
+                try:
+                    count = self._presentation_editor.slide_count()
+                except Exception:
+                    count = 0
+                return f"DOCX 将按整套“{source}”内容导出，当前共 {max(1, count)} 页。"
+            return f"DOCX 将按当前“{source}”内容导出。"
+        return f"{target_name} 将按当前“{source}”内容导出。"
+
     def _preflight_report(self) -> tuple[str, List[str]]:
         pid = self._current_content_page_id()
         source = self._content_mode_label(pid)
@@ -5383,6 +5411,7 @@ class MainWindowFluent(FluentWindow):
                 table_blob=self._capture_table_blob(),
                 slides=self._capture_slides_storage(),
                 slides_master=self._presentation_editor.master_storage(),
+                render_modes=self._capture_render_modes(),
                 sketch_blob=self._capture_sketch_blob(),
                 insert_vector=self._capture_insert_vector_blob(),
             )
@@ -5391,7 +5420,12 @@ class MainWindowFluent(FluentWindow):
             return
         self._last_saved_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._apply_window_title()
-        self._notify_success("已保存", f"{self._project_path.name} 已保存，可放心继续编辑。")
+        self._notify_success(
+            "已保存",
+            f"{self._project_path.name} 已保存，可放心继续编辑。"
+            f" 当前模式：文字 {self._word_render_mode_label()}，"
+            f"表格 {self._table_render_mode_label()}，演示 {self._slides_render_mode_label()}。",
+        )
         self._update_action_states()
         self._update_status_line()
 
@@ -5458,6 +5492,7 @@ class MainWindowFluent(FluentWindow):
                 self._presentation_editor.load_master_storage(d.get("slides_master"))
             except Exception:
                 pass
+            self._apply_render_modes(d.get("render_modes"))
             self._apply_loaded_paths(d)
         finally:
             self._nonword_undo_restoring = False
@@ -5469,7 +5504,9 @@ class MainWindowFluent(FluentWindow):
         self._update_status_line()
         self._notify_success(
             "已打开工程",
-            f"{self._project_path.name} 已载入，可继续编辑、预览或导出。",
+            f"{self._project_path.name} 已载入，可继续编辑、预览或导出。"
+            f" 当前模式：文字 {self._word_render_mode_label()}，"
+            f"表格 {self._table_render_mode_label()}，演示 {self._slides_render_mode_label()}。",
         )
 
     def _open_office_or_wps_file(self, path: Path) -> None:
@@ -6335,6 +6372,42 @@ class MainWindowFluent(FluentWindow):
     def _capture_slides_storage_for_export(self) -> list[str]:
         return self._presentation_editor.slides_storage_for_export()
 
+    def _capture_render_modes(self) -> dict:
+        return {
+            "word": str(getattr(self._cfg, "word_render_mode", "stroke") or "stroke"),
+            "table": str(getattr(self._cfg, "table_render_mode", "stroke") or "stroke"),
+            "slides": str(getattr(self._cfg, "slides_render_mode", "stroke") or "stroke"),
+        }
+
+    def _apply_render_modes(self, data: dict | None) -> None:
+        data = data if isinstance(data, dict) else {}
+        word_mode = str(data.get("word", getattr(self._cfg, "word_render_mode", "stroke")) or "stroke")
+        table_mode = str(data.get("table", getattr(self._cfg, "table_render_mode", "stroke")) or "stroke")
+        slides_mode = str(data.get("slides", getattr(self._cfg, "slides_render_mode", "stroke")) or "stroke")
+        self._cfg.word_render_mode = "outline" if word_mode == "outline" else "stroke"
+        self._cfg.table_render_mode = "outline" if table_mode == "outline" else "stroke"
+        self._cfg.slides_render_mode = "outline" if slides_mode == "outline" else "stroke"
+        if hasattr(self, "_word_editor"):
+            self._word_editor.set_render_mode(self._cfg.word_render_mode)
+        if hasattr(self, "_word_render_mode_combo"):
+            idx = self._word_render_mode_combo.findData(self._cfg.word_render_mode)
+            if idx >= 0 and self._word_render_mode_combo.currentIndex() != idx:
+                self._word_render_mode_combo.blockSignals(True)
+                self._word_render_mode_combo.setCurrentIndex(idx)
+                self._word_render_mode_combo.blockSignals(False)
+        if hasattr(self, "_table_render_mode_combo"):
+            idx = self._table_render_mode_combo.findData(self._cfg.table_render_mode)
+            if idx >= 0 and self._table_render_mode_combo.currentIndex() != idx:
+                self._table_render_mode_combo.blockSignals(True)
+                self._table_render_mode_combo.setCurrentIndex(idx)
+                self._table_render_mode_combo.blockSignals(False)
+        if hasattr(self, "_slides_render_mode_combo"):
+            idx = self._slides_render_mode_combo.findData(self._cfg.slides_render_mode)
+            if idx >= 0 and self._slides_render_mode_combo.currentIndex() != idx:
+                self._slides_render_mode_combo.blockSignals(True)
+                self._slides_render_mode_combo.setCurrentIndex(idx)
+                self._slides_render_mode_combo.blockSignals(False)
+
     # ---------- 导出（占位） ----------
     def _export_gcode_to_file_stub(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -6398,7 +6471,7 @@ class MainWindowFluent(FluentWindow):
             self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
             return
         self._log_event("导出", f"DOCX 已导出到 {Path(path).name}")
-        self._notify_success("已导出", f"DOCX 已生成：{Path(path).name}")
+        self._notify_success("已导出", f"DOCX 已生成：{Path(path).name}。{self._office_export_tip('DOCX')}")
 
     def _export_xlsx(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -6425,7 +6498,7 @@ class MainWindowFluent(FluentWindow):
             self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
             return
         self._log_event("导出", f"XLSX 已导出到 {Path(path).name}")
-        self._notify_success("已导出", f"XLSX 已生成：{Path(path).name}")
+        self._notify_success("已导出", f"XLSX 已生成：{Path(path).name}。{self._office_export_tip('XLSX')}")
 
     def _export_pptx(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -6457,7 +6530,7 @@ class MainWindowFluent(FluentWindow):
             self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
             return
         self._log_event("导出", f"PPTX 已导出到 {Path(path).name}")
-        self._notify_success("已导出", f"PPTX 已生成：{Path(path).name}")
+        self._notify_success("已导出", f"PPTX 已生成：{Path(path).name}。{self._office_export_tip('PPTX')}")
 
     def _slides_plain_to_markdown(self) -> str:
         parts: list[str] = []
@@ -6483,6 +6556,25 @@ class MainWindowFluent(FluentWindow):
                 lines.append("\t".join(texts).rstrip())
         return "\n".join(lines)
 
+    def _slides_docx_paragraphs(self) -> List[DocParagraph]:
+        """演示导出 DOCX 时按整套幻灯片汇总，避免只导出当前页。"""
+        paragraphs: List[DocParagraph] = []
+        slides = self._capture_slides_storage_for_export()
+        for idx, slide in enumerate(slides, start=1):
+            text = str(slide or "").strip()
+            paragraphs.append(
+                DocParagraph(
+                    runs=[DocRun(text=f"第 {idx} 页")],
+                    align="left",
+                )
+            )
+            lines = text.splitlines() if text else [""]
+            for line in lines:
+                paragraphs.append(DocParagraph(runs=[DocRun(text=line)]))
+            if idx < len(slides):
+                paragraphs.append(DocParagraph(runs=[DocRun(text="")]))
+        return paragraphs or [DocParagraph(runs=[DocRun(text="")])]
+
     def _docx_export_payload(self) -> tuple[List[DocParagraph], str | None]:
         """按当前内容来源生成 DOCX 导出内容，避免误导出隐藏页。"""
         name = self._current_content_page_id()
@@ -6491,8 +6583,7 @@ class MainWindowFluent(FluentWindow):
             raw = body.split("\n") if body else [""]
             return [DocParagraph(runs=[DocRun(text=ln)]) for ln in raw], None
         if name == "slides":
-            ed = self._presentation_editor.slide_editor()
-            return self._docx_paragraphs_from_editor_widget(ed), ed.toHtml()
+            return self._slides_docx_paragraphs(), None
         return self._docx_paragraphs_from_editor_widget(self._word_editor), self._word_editor.toHtml()
 
     def _require_export_source(self, expected_pid: str, target_name: str) -> None:
@@ -6540,7 +6631,7 @@ class MainWindowFluent(FluentWindow):
             self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
             return
         self._log_event("导出", f"Markdown 已导出到 {Path(path).name}")
-        self._notify_success("已导出", f"Markdown 已生成：{Path(path).name}")
+        self._notify_success("已导出", f"Markdown 已生成：{Path(path).name}。{self._office_export_tip('Markdown')}")
 
     def _docx_paragraphs_from_editor_widget(self, ed) -> List[DocParagraph]:  # noqa: ANN001
         """高保真（基础）：从 QTextDocument 抽取段落与字符级样式。"""

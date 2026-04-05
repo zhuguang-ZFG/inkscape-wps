@@ -43,3 +43,4 @@ def test_load_old_file_fallback_plain_text(tmp_path: Path):
     )
     d = load_project_file(p)
     assert d["word_plain_text"] == "Hello\nWorld"
+    assert d["render_modes"] == {}
