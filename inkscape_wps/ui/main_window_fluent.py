@@ -3615,8 +3615,11 @@ class MainWindowFluent(FluentWindow):
         )
 
     def _on_status_line_link_activated(self, link: str) -> None:
-        if str(link or "").strip() == "missing-glyphs":
+        target = str(link or "").strip()
+        if target == "missing-glyphs":
             self._show_missing_glyphs_dialog()
+        elif target == "preflight-report":
+            self._show_preflight_report()
 
     def _current_work_paths_checked(self) -> List[VectorPath]:
         paths = self._work_paths()
@@ -4795,12 +4798,22 @@ class MainWindowFluent(FluentWindow):
             f"文档：{self._doc_title}（{proj}）   页面：{page}   "
             f"预览：{int(self._preview_zoom * 100)}%   连接：{conn}{extra}{runtime}"
         )
+        health_level, _health_color, _health_badge, _health_items = self._health_status_payload()
+        links: list[str] = []
+        tooltip_parts: list[str] = []
         if glyph_hint.startswith("缺字形："):
-            self._status_line.setText(
-                f"{html_module.escape(status_text)}   "
+            links.append(
                 '<a href="missing-glyphs" style="color:#217346;text-decoration:none;">查看缺失字符</a>'
             )
-            self._status_line.setToolTip("当前内容存在未覆盖字符，点击“查看缺失字符”可查看详情。")
+            tooltip_parts.append("当前内容存在未覆盖字符，可先查看缺失字符。")
+        if health_level in ("warn", "error"):
+            links.append(
+                '<a href="preflight-report" style="color:#b06a12;text-decoration:none;">开始检查</a>'
+            )
+            tooltip_parts.append("当前状态建议先做导出/发送前检查。")
+        if links:
+            self._status_line.setText(f"{html_module.escape(status_text)}   " + "   ".join(links))
+            self._status_line.setToolTip(" ".join(tooltip_parts))
         else:
             self._status_line.setText(html_module.escape(status_text))
             self._status_line.setToolTip("")

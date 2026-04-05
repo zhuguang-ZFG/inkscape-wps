@@ -262,6 +262,8 @@ class TestFluentContextAndUndoRegression(unittest.TestCase):
         self.assertIn("def _on_status_line_link_activated(self, link: str) -> None:", code)
         self.assertIn('self._status_line.linkActivated.connect(self._on_status_line_link_activated)', code)
         self.assertIn('href="missing-glyphs"', code)
+        self.assertIn('href="preflight-report"', code)
+        self.assertIn('elif target == "preflight-report":', code)
 
     def test_table_editor_supports_grid_gcode_modes(self) -> None:
         code = Path("inkscape_wps/ui/table_editor_pyqt5.py").read_text(encoding="utf-8")
