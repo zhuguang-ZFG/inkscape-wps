@@ -7,11 +7,22 @@ import re
 from typing import Optional
 
 from PyQt5.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QInputMethodEvent, QKeyEvent, QMouseEvent, QPainter, QPen
+from PyQt5.QtGui import (
+    QColor,
+    QFont,
+    QFontMetricsF,
+    QInputMethodEvent,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
 from PyQt5.QtWidgets import QApplication, QWidget
 
 from inkscape_wps.core.config import MachineConfig
 from inkscape_wps.core.hershey import HersheyFontMapper
+from inkscape_wps.core.types import Point, VectorPath
 from inkscape_wps.ui.stroke_layout import LayoutRow, StrokeLayoutEngine
 from inkscape_wps.ui.stroke_text_model import StrokeTextModel
 
@@ -28,6 +39,7 @@ class StrokeTextEditor(QWidget):
         super().__init__(parent)
         self._cfg = cfg
         self._mapper = mapper
+        self._render_mode = str(getattr(cfg, "word_render_mode", "stroke") or "stroke")
         self._model = StrokeTextModel("")
         ls = float(getattr(cfg, "stroke_editor_line_spacing", 1.45))
         self._layout = StrokeLayoutEngine(font_px=18.0, line_spacing=ls)
@@ -96,6 +108,15 @@ class StrokeTextEditor(QWidget):
         self._mapper = mapper
         self._emit_changed()
 
+    def set_render_mode(self, mode: str) -> None:
+        mode = str(mode or "stroke").strip().lower()
+        self._render_mode = "outline" if mode == "outline" else "stroke"
+        setattr(self._cfg, "word_render_mode", self._render_mode)
+        self._emit_changed()
+
+    def render_mode(self) -> str:
+        return self._render_mode
+
     def _on_blink(self) -> None:
         self._caret_visible = not self._caret_visible
         self.update()
@@ -105,25 +126,35 @@ class StrokeTextEditor(QWidget):
         if self._preedit_text:
             c = self._model.caret
             txt = txt[:c] + self._preedit_text + txt[c:]
-        fs = self._layout.font_px * 0.75
-        ref_a = self._layout.font_px * 0.62
-        mpp = self._mapper_mm_per_pt()
-        advs, _, _ = self._mapper.estimate_advances_and_vertical_metrics(
-            txt,
-            fs,
-            mm_per_pt=mpp,
-            reference_ascent_pt=ref_a,
-        )
+        if self._render_mode == "outline":
+            font = QFont(self.font())
+            font.setPointSizeF(self.stroke_font_point_size())
+            fm = QFontMetricsF(font)
+            advs = [0.0 if ch == "\n" else float(fm.horizontalAdvance(ch)) for ch in txt]
 
-        def _row_vertical(sub: str) -> tuple[float, float]:
-            _adv, asc, desc = self._mapper.estimate_advances_and_vertical_metrics(
-                sub,
+            def _row_vertical(sub: str) -> tuple[float, float]:
+                del sub
+                return float(fm.ascent()), float(fm.descent())
+        else:
+            fs = self._layout.font_px * 0.75
+            ref_a = self._layout.font_px * 0.62
+            mpp = self._mapper_mm_per_pt()
+            advs, _, _ = self._mapper.estimate_advances_and_vertical_metrics(
+                txt,
                 fs,
                 mm_per_pt=mpp,
                 reference_ascent_pt=ref_a,
             )
-            del _adv
-            return asc, desc
+
+            def _row_vertical(sub: str) -> tuple[float, float]:
+                _adv, asc, desc = self._mapper.estimate_advances_and_vertical_metrics(
+                    sub,
+                    fs,
+                    mm_per_pt=mpp,
+                    reference_ascent_pt=ref_a,
+                )
+                del _adv
+                return asc, desc
 
         self._rows = self._layout.layout(
             txt,
@@ -231,6 +262,33 @@ class StrokeTextEditor(QWidget):
             viewport_width_px=max(1.0, float(self.width())),
             viewport_height_px=max(1.0, float(self.height())),
         )
+
+    def to_outline_paths(self) -> list[VectorPath]:
+        self._relayout()
+        font = QFont(self.font())
+        font.setPointSizeF(self.stroke_font_point_size())
+        mm_px_x = float(self._cfg.page_width_mm) / max(1.0, float(self.width()))
+        mm_px_y = float(self._cfg.page_height_mm) / max(1.0, float(self.height()))
+        margin_mm = float(self._cfg.document_margin_mm)
+        out: list[VectorPath] = []
+        for row in self._rows:
+            if not row.text:
+                continue
+            path = QPainterPath()
+            path.addText(QPointF(row.x_px, row.y_px + row.baseline_du), font, row.text)
+            for poly in path.toSubpathPolygons():
+                if poly.size() < 2:
+                    continue
+                pts = []
+                for qpt in poly:
+                    x_mm = margin_mm + float(qpt.x()) * mm_px_x
+                    y_mm = float(self._cfg.page_height_mm) - float(qpt.y()) * mm_px_y
+                    pts.append(Point(x_mm, y_mm))
+                if len(pts) >= 2 and (pts[0].x != pts[-1].x or pts[0].y != pts[-1].y):
+                    pts.append(Point(pts[0].x, pts[0].y))
+                if len(pts) >= 2:
+                    out.append(VectorPath(tuple(pts)))
+        return out
 
     # -------- ime --------
     def inputMethodEvent(self, e: QInputMethodEvent) -> None:  # noqa: N802
@@ -377,39 +435,56 @@ class StrokeTextEditor(QWidget):
                     if s <= c.index < t:
                         p.fillRect(QRectF(c.x_px, c.y_px, c.w_px, c.h_px), QColor("#e6f4ea"))
         # strokes
-        pen = QPen(QColor("#1a1a1a"))
-        pen.setWidthF(1.15)
-        p.setPen(pen)
-        mpp = self._mapper_mm_per_pt()
-        for row in self._rows:
-            if not row.text:
-                continue
-            lines = self._mapper.map_line(
-                row.text,
-                row.x_px,
-                row.y_px + row.baseline_du,
-                self._layout.font_px * 0.75,
-                mm_per_pt=mpp,
-                reference_ascent_pt=self._layout.font_px * 0.62,
-                per_char_advances_mm=row.advances_px,
-            )
-            for vp in lines:
-                if len(vp.points) < 2:
+        if self._render_mode == "outline":
+            p.setRenderHint(QPainter.Antialiasing, True)
+            font = QFont(self.font())
+            font.setPointSizeF(self.stroke_font_point_size())
+            for row in self._rows:
+                if not row.text:
                     continue
-                q = [QPointF(pt.x, pt.y) for pt in vp.points]
-                for i in range(1, len(q)):
-                    p.drawLine(q[i - 1], q[i])
-        # preedit underline
-        if self._preedit_text:
-            cx, cy, _, ch = self._layout.caret_rect(self._rows, self._model.caret, margin_px=14.0)
-            pre_w = sum(
-                self._mapper.estimate_advances(
-                    self._preedit_text,
+                path = QPainterPath()
+                path.addText(QPointF(row.x_px, row.y_px + row.baseline_du), font, row.text)
+                p.fillPath(path, QColor("#1a1a1a"))
+        else:
+            pen = QPen(QColor("#1a1a1a"))
+            pen.setWidthF(1.15)
+            p.setPen(pen)
+            mpp = self._mapper_mm_per_pt()
+            for row in self._rows:
+                if not row.text:
+                    continue
+                lines = self._mapper.map_line(
+                    row.text,
+                    row.x_px,
+                    row.y_px + row.baseline_du,
                     self._layout.font_px * 0.75,
                     mm_per_pt=mpp,
                     reference_ascent_pt=self._layout.font_px * 0.62,
+                    per_char_advances_mm=row.advances_px,
                 )
-            )
+                for vp in lines:
+                    if len(vp.points) < 2:
+                        continue
+                    q = [QPointF(pt.x, pt.y) for pt in vp.points]
+                    for i in range(1, len(q)):
+                        p.drawLine(q[i - 1], q[i])
+        # preedit underline
+        if self._preedit_text:
+            cx, cy, _, ch = self._layout.caret_rect(self._rows, self._model.caret, margin_px=14.0)
+            if self._render_mode == "outline":
+                font = QFont(self.font())
+                font.setPointSizeF(self.stroke_font_point_size())
+                fm = QFontMetricsF(font)
+                pre_w = sum(float(fm.horizontalAdvance(ch0)) for ch0 in self._preedit_text)
+            else:
+                pre_w = sum(
+                    self._mapper.estimate_advances(
+                        self._preedit_text,
+                        self._layout.font_px * 0.75,
+                        mm_per_pt=mpp,
+                        reference_ascent_pt=self._layout.font_px * 0.62,
+                    )
+                )
             p.setPen(QPen(QColor("#2767c6"), 1.0, Qt.DashLine))
             p.drawLine(QPointF(cx, cy + ch - 2), QPointF(cx + pre_w, cy + ch - 2))
         # caret

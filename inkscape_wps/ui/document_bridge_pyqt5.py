@@ -9,10 +9,11 @@ from __future__ import annotations
 
 from typing import List, Tuple, Union
 
-from PyQt5.QtGui import QFont, QFontMetricsF, QTextCharFormat, QTextDocument
+from PyQt5.QtGui import QFont, QFontMetricsF, QPainterPath, QTextCharFormat, QTextDocument
 from PyQt5.QtWidgets import QTextEdit
 
 from inkscape_wps.core.config import MachineConfig
+from inkscape_wps.core.types import Point, VectorPath
 
 # (text, ox_mm, baseline_y_mm, font_pt) 或含 ascent / 字宽
 LayoutLine = Union[
@@ -176,6 +177,99 @@ def text_edit_to_layout_lines(
     return out
 
 
+def text_edit_to_outline_paths(
+    editor: QTextEdit,
+    cfg: MachineConfig,
+    *,
+    margin_mm: float | None = None,
+    mm_per_px: float | None = None,
+) -> List[VectorPath]:
+    """将 QTextEdit 富文本直接转为字体轮廓路径，保留 run 级字体差异并跳过删除线。"""
+    m = cfg.document_margin_mm if margin_mm is None else margin_mm
+    doc = editor.document()
+    doc.adjustSize()
+
+    vw = max(1, editor.viewport().width())
+    mm_px_x = mm_per_px if mm_per_px is not None else cfg.page_width_mm / float(vw)
+    doc_h = max(float(doc.size().height()), 1.0)
+    mm_px_y = cfg.page_height_mm / doc_h * float(cfg.layout_vertical_scale)
+
+    out: List[VectorPath] = []
+    doc_layout = doc.documentLayout()
+    block = doc.firstBlock()
+
+    while block.isValid():
+        blo = block.layout()
+        if blo is None or blo.lineCount() == 0:
+            block = block.next()
+            continue
+
+        block_rect = doc_layout.blockBoundingRect(block)
+        offset = block_rect.topLeft()
+
+        for li in range(blo.lineCount()):
+            line = blo.lineAt(li)
+            tlen = line.textLength()
+            line_x = offset.x() + line.x()
+            line_y_top = offset.y() + line.y()
+            baseline_doc_y = line_y_top + line.ascent()
+            line_start = block.position() + line.textStart()
+            j = 0
+            while j < tlen:
+                pos0 = line_start + j
+                key0 = _char_run_layout_key(doc, pos0)
+                j_end = j + 1
+                while j_end < tlen:
+                    if _char_run_layout_key(doc, line_start + j_end) != key0:
+                        break
+                    j_end += 1
+
+                if key0[1]:
+                    j = j_end
+                    continue
+
+                tf0 = _char_format_at_doc_pos(doc, pos0).font()
+                pt = float(
+                    tf0.pointSizeF()
+                    if tf0.pointSizeF() > 0
+                    else tf0.pointSize() or 12.0
+                )
+                if pt <= 0:
+                    pt = 12.0
+                font = QFont(tf0)
+                font.setPointSizeF(pt)
+
+                rel0 = j
+                x0 = line_x + _line_cursor_to_x(line, rel0)
+                chars: List[str] = []
+                for k in range(j, j_end):
+                    ch = doc.characterAt(line_start + k)
+                    if ch == "\u0000":
+                        break
+                    chars.append(ch)
+                text = "".join(chars).replace("\u2029", "")
+                if text:
+                    path = QPainterPath()
+                    path.addText(x0, baseline_doc_y, font, text)
+                    for poly in path.toSubpathPolygons():
+                        if poly.size() < 2:
+                            continue
+                        pts: List[Point] = []
+                        for qpt in poly:
+                            x_mm = float(m) + float(qpt.x()) * mm_px_x
+                            y_mm = float(cfg.page_height_mm) - float(qpt.y()) * mm_px_y
+                            pts.append(Point(x_mm, y_mm))
+                        if len(pts) >= 2 and (pts[0].x != pts[-1].x or pts[0].y != pts[-1].y):
+                            pts.append(Point(pts[0].x, pts[0].y))
+                        if len(pts) >= 2:
+                            out.append(VectorPath(tuple(pts)))
+                j = j_end
+
+        block = block.next()
+
+    return out
+
+
 def html_fragment_to_layout_lines(
     html: str,
     cfg: MachineConfig,
@@ -293,6 +387,110 @@ def html_fragment_to_layout_lines(
         default_adv = (6.5 / 10.0) * pt * float(cfg.mm_per_pt)
         advs = tuple(default_adv for _ in line)
         return [(line, float(cell_left_mm) + 0.5, baseline_up_mm, pt, ref_ascent_pt, advs)]
+
+    return out
+
+
+def html_fragment_to_outline_paths(
+    html: str,
+    cfg: MachineConfig,
+    *,
+    cell_left_mm: float,
+    cell_top_from_page_top_mm: float,
+    cell_width_mm: float,
+    cell_height_mm: float,
+    mm_per_px_x: float,
+    default_pt: float = 12.0,
+) -> List[VectorPath]:
+    """将单元格 HTML 直接转为字体轮廓路径，用于表格视觉复刻模式。"""
+    if not html or not html.strip():
+        return []
+
+    doc = QTextDocument()
+    doc.setDefaultFont(QFont())
+    width_px = max(24.0, float(cell_width_mm) / max(mm_per_px_x, 1e-9))
+    doc.setTextWidth(width_px)
+    doc.setHtml(html)
+    doc.adjustSize()
+
+    doc_h = max(float(doc.size().height()), 1.0)
+    inner_h = max(float(cell_height_mm) * 0.92, 1e-6)
+    mm_px_y = inner_h / doc_h * float(cfg.layout_vertical_scale)
+
+    out: List[VectorPath] = []
+    doc_layout = doc.documentLayout()
+    block = doc.firstBlock()
+
+    while block.isValid():
+        blo = block.layout()
+        if blo is None or blo.lineCount() == 0:
+            block = block.next()
+            continue
+
+        block_rect = doc_layout.blockBoundingRect(block)
+        offset = block_rect.topLeft()
+
+        for li in range(blo.lineCount()):
+            line = blo.lineAt(li)
+            tlen = line.textLength()
+            line_x = offset.x() + line.x()
+            line_y_top = offset.y() + line.y()
+            baseline_doc_y = line_y_top + line.ascent()
+            line_start = block.position() + line.textStart()
+            j = 0
+            while j < tlen:
+                pos0 = line_start + j
+                key0 = _char_run_layout_key(doc, pos0)
+                j_end = j + 1
+                while j_end < tlen:
+                    if _char_run_layout_key(doc, line_start + j_end) != key0:
+                        break
+                    j_end += 1
+
+                if key0[1]:
+                    j = j_end
+                    continue
+
+                tf0 = _char_format_at_doc_pos(doc, pos0).font()
+                pt = float(
+                    tf0.pointSizeF()
+                    if tf0.pointSizeF() > 0
+                    else tf0.pointSize() or default_pt
+                )
+                if pt <= 0:
+                    pt = default_pt
+                font = QFont(tf0)
+                font.setPointSizeF(pt)
+
+                rel0 = j
+                x0 = line_x + _line_cursor_to_x(line, rel0)
+                chars: List[str] = []
+                for k in range(j, j_end):
+                    ch = doc.characterAt(line_start + k)
+                    if ch == "\u0000":
+                        break
+                    chars.append(ch)
+                text = "".join(chars).replace("\u2029", "")
+                if text:
+                    path = QPainterPath()
+                    path.addText(x0, baseline_doc_y, font, text)
+                    for poly in path.toSubpathPolygons():
+                        if poly.size() < 2:
+                            continue
+                        pts: List[Point] = []
+                        for qpt in poly:
+                            x_mm = float(cell_left_mm) + float(qpt.x()) * mm_per_px_x
+                            y_mm = float(cfg.page_height_mm) - (
+                                float(cell_top_from_page_top_mm) + float(qpt.y()) * mm_px_y
+                            )
+                            pts.append(Point(x_mm, y_mm))
+                        if len(pts) >= 2 and (pts[0].x != pts[-1].x or pts[0].y != pts[-1].y):
+                            pts.append(Point(pts[0].x, pts[0].y))
+                        if len(pts) >= 2:
+                            out.append(VectorPath(tuple(pts)))
+                j = j_end
+
+        block = block.next()
 
     return out
 

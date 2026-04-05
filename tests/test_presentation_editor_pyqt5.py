@@ -71,6 +71,17 @@ class PresentationEditorPyQt5Tests(unittest.TestCase):
         self.assertIn("G0 X", gcode)
         self.assertIn("G1 X", gcode)
 
+    def test_outline_paths_all_slides_include_master_text(self) -> None:
+        editor = WpsPresentationEditorPyQt5(MachineConfig())
+        editor.resize(900, 600)
+        editor.load_slides(["ABC"])
+        editor.set_master_header("HDR")
+
+        paths = editor.to_outline_paths_all_slides(mm_per_px_resolver=lambda _ed: 0.25)
+
+        self.assertTrue(paths)
+        self.assertTrue(any(len(p.points) >= 2 for p in paths))
+
 
 if __name__ == "__main__":
     unittest.main()

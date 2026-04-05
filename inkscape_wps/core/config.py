@@ -78,6 +78,12 @@ class MachineConfig:
 
     # 单线字形编辑区行距系数（相对内置基准 1.45，见 StrokeLayoutEngine._leading_du）
     stroke_editor_line_spacing: float = 1.45
+    # 文字页路径模式：stroke=单线雕刻；outline=视觉复刻（字体轮廓）
+    word_render_mode: str = "stroke"
+    # 表格页路径模式：stroke=单线雕刻；outline=视觉复刻（字体轮廓）
+    table_render_mode: str = "stroke"
+    # 演示页路径模式：stroke=单线雕刻；outline=视觉复刻（字体轮廓）
+    slides_render_mode: str = "stroke"
 
     def to_json_dict(self) -> Dict[str, Any]:
         return asdict(self)

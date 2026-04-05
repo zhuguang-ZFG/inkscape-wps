@@ -36,7 +36,9 @@ from inkscape_wps.ui.document_bridge_pyqt5 import (
     apply_default_tab_stops,
     document_plain_text_skip_strike,
     text_edit_to_layout_lines,
+    text_edit_to_outline_paths,
 )
+from inkscape_wps.core.types import Point, VectorPath
 
 
 def _slide_plain_preview(stored: str, max_len: int = 18) -> str:
@@ -681,3 +683,57 @@ class WpsPresentationEditorPyQt5(QWidget):
         if row < len(self._slides):
             self._apply_slide_to_editor(self._slides[row])
         return all_lines
+
+    def to_outline_paths_all_slides(
+        self,
+        *,
+        mm_per_px_resolver: Callable[[QTextEdit], float],
+    ) -> List[VectorPath]:
+        scr = self._scratch
+        scr.setFont(self._editor.font())
+        scr.document().setDocumentMargin(self._editor.document().documentMargin())
+        vw = max(1, self._editor.viewport().width())
+        vh = max(1, self._editor.viewport().height())
+        scr.resize(vw, vh)
+
+        out: List[VectorPath] = []
+        for i, stored in enumerate(self._slides):
+            scr.blockSignals(True)
+            if not stored or not stored.strip():
+                scr.clear()
+            elif stored.lstrip().startswith("<"):
+                scr.setHtml(stored)
+            else:
+                scr.setPlainText(stored)
+
+            if self._master_header.strip() or self._master_footer.strip():
+                doc = scr.document()
+                cur = QTextCursor(doc)
+                cur.beginEditBlock()
+                if self._master_header.strip():
+                    cur.movePosition(QTextCursor.Start)
+                    cur.insertText(self._master_header.strip())
+                    cur.insertBlock()
+                if self._master_footer.strip():
+                    cur.movePosition(QTextCursor.End)
+                    cur.insertBlock()
+                    cur.insertText(self._master_footer.strip())
+                cur.endEditBlock()
+
+            scr.blockSignals(False)
+            slide_paths = text_edit_to_outline_paths(
+                scr,
+                self._cfg,
+                mm_per_px=mm_per_px_resolver(scr),
+            )
+            dy = i * self._slide_height_mm
+            for vp in slide_paths:
+                pts = tuple(Point(p.x, p.y - dy) for p in vp.points)
+                out.append(VectorPath(pts, pen_down=vp.pen_down))
+
+        row = self._list.currentRow()
+        if row < 0:
+            row = 0
+        if row < len(self._slides):
+            self._apply_slide_to_editor(self._slides[row])
+        return out

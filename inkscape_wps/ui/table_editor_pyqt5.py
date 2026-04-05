@@ -25,7 +25,10 @@ from PyQt5.QtWidgets import (
 
 from inkscape_wps.core.config import MachineConfig
 from inkscape_wps.core.types import Point, VectorPath
-from inkscape_wps.ui.document_bridge_pyqt5 import html_fragment_to_layout_lines
+from inkscape_wps.ui.document_bridge_pyqt5 import (
+    html_fragment_to_layout_lines,
+    html_fragment_to_outline_paths,
+)
 
 LayoutLineUnion = Union[
     Tuple[str, float, float, float],
@@ -639,6 +642,47 @@ class WpsTableEditorPyQt5(QWidget):
                     default_pt=pt,
                 )
                 out.extend(lines)
+
+        return out
+
+    def to_outline_paths(self, mm_per_px: float) -> List[VectorPath]:
+        m = float(self._cfg.document_margin_mm)
+        cw = float(self._spin_cw.value())
+        ch = float(self._spin_ch.value())
+        pt = float(self._font_pt_resolver())
+        if pt <= 0:
+            pt = 12.0
+
+        rows = self._table.rowCount()
+        cols = self._table.columnCount()
+        covered, anchor_cells = self._span_covered_cells()
+        out: List[VectorPath] = []
+
+        for r in range(rows):
+            for c in range(cols):
+                it = self._table.item(r, c)
+                raw = (it.text() if it is not None else "").strip()
+                if not raw:
+                    continue
+                if (r, c) in covered and (r, c) not in anchor_cells:
+                    continue
+                html = self._cell_html(it)
+                rs = int(self._table.rowSpan(r, c) or 1)
+                cs = int(self._table.columnSpan(r, c) or 1)
+                cell_left = m + c * cw + 0.5
+                cell_top = m + r * ch
+                out.extend(
+                    html_fragment_to_outline_paths(
+                        html,
+                        self._cfg,
+                        cell_left_mm=cell_left,
+                        cell_top_from_page_top_mm=cell_top,
+                        cell_width_mm=max(cw * cs - 1.0, 2.0),
+                        cell_height_mm=ch * rs * 0.95,
+                        mm_per_px_x=mm_per_px,
+                        default_pt=pt,
+                    )
+                )
 
         return out
 

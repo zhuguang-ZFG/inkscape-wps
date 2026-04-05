@@ -78,6 +78,22 @@ class TableEditorGridPyQt5Tests(unittest.TestCase):
             },
         )
 
+    def test_table_outline_paths_export_text_contours(self) -> None:
+        editor = WpsTableEditorPyQt5(MachineConfig())
+        editor.from_project_blob(
+            {
+                "rows": 1,
+                "cols": 1,
+                "grid_gcode_mode": "none",
+                "cells": [[{"text": "A", "html": "<p>A</p>"}]],
+            }
+        )
+
+        paths = editor.to_outline_paths(mm_per_px=0.25)
+
+        self.assertTrue(paths)
+        self.assertTrue(any(len(p.points) >= 2 for p in paths))
+
 
 if __name__ == "__main__":
     unittest.main()

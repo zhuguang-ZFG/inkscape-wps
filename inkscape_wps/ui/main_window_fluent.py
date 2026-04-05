@@ -560,6 +560,38 @@ class MainWindowFluent(FluentWindow):
             "all": "全部网格",
         }.get(mode, "不导出")
 
+    def _word_render_mode_label(self) -> str:
+        mode = str(getattr(self._cfg, "word_render_mode", "stroke") or "stroke").strip().lower()
+        return "视觉复刻" if mode == "outline" else "单线雕刻"
+
+    def _table_render_mode_label(self) -> str:
+        mode = str(getattr(self._cfg, "table_render_mode", "stroke") or "stroke").strip().lower()
+        return "视觉复刻" if mode == "outline" else "单线雕刻"
+
+    def _slides_render_mode_label(self) -> str:
+        mode = str(getattr(self._cfg, "slides_render_mode", "stroke") or "stroke").strip().lower()
+        return "视觉复刻" if mode == "outline" else "单线雕刻"
+
+    def _render_mode_tip(self, mode: str) -> str:
+        mode = str(mode or "stroke").strip().lower()
+        if mode == "outline":
+            return "视觉复刻更接近屏幕字体外观，适合版式校对、Logo 字和展示稿，但路径会更多。"
+        return "单线雕刻更适合 CNC/激光走线，路径更轻，生成 G-code 更稳。"
+
+    def _current_render_mode_label(self, pid: str) -> str:
+        if pid == "table":
+            return self._table_render_mode_label()
+        if pid == "slides":
+            return self._slides_render_mode_label()
+        return self._word_render_mode_label()
+
+    def _current_render_mode_tip(self, pid: str) -> str:
+        if pid == "table":
+            return self._render_mode_tip(getattr(self._cfg, "table_render_mode", "stroke"))
+        if pid == "slides":
+            return self._render_mode_tip(getattr(self._cfg, "slides_render_mode", "stroke"))
+        return self._render_mode_tip(getattr(self._cfg, "word_render_mode", "stroke"))
+
     def _preflight_report(self) -> tuple[str, List[str]]:
         pid = self._current_content_page_id()
         source = self._content_mode_label(pid)
@@ -571,6 +603,13 @@ class MainWindowFluent(FluentWindow):
         infos: List[str] = []
 
         infos.append(f"当前来源：{source}")
+        if pid == "word":
+            infos.append(f"文字模式：{self._word_render_mode_label()}")
+        elif pid == "table":
+            infos.append(f"表格模式：{self._table_render_mode_label()}")
+        elif pid == "slides":
+            infos.append(f"演示模式：{self._slides_render_mode_label()}")
+        infos.append(f"模式说明：{self._current_render_mode_tip(pid)}")
         infos.append(
             "纸张尺寸："
             f"{float(getattr(self._cfg, 'page_width_mm', 0.0)):.1f} × "
@@ -790,7 +829,12 @@ class MainWindowFluent(FluentWindow):
             else QMessageBox.Information
         )
         box.setText(headline)
-        box.setInformativeText("这份检查单按当前预览来源生成，可直接用于导出前或发送前复核。")
+        pid = self._current_content_page_id()
+        box.setInformativeText(
+            "这份检查单按当前预览来源生成，可直接用于导出前或发送前复核。"
+            f"\n当前模式：{self._current_render_mode_label(pid)}"
+            f"\n{self._current_render_mode_tip(pid)}"
+        )
         box.setDetailedText("\n".join(lines))
         box.exec()
 
@@ -1505,6 +1549,7 @@ class MainWindowFluent(FluentWindow):
         wsv.setSpacing(0)
 
         self._word_editor = StrokeTextEditor(self._cfg, self._mapper)
+        self._word_editor.set_render_mode(str(getattr(self._cfg, "word_render_mode", "stroke")))
         self._word_editor.textChanged.connect(self._refresh_preview)
         self._word_editor.textChanged.connect(self._refresh_undo_redo_menu_state)
         self._word_editor.textChanged.connect(self._update_status_line)
@@ -2890,6 +2935,29 @@ class MainWindowFluent(FluentWindow):
 
         if mode == "table":
             table_group, table_row = self._build_ribbon_group("表格")
+            self._table_render_mode_combo = ComboBox()
+            self._table_render_mode_combo.addItem("单线雕刻", "stroke")
+            self._table_render_mode_combo.addItem("视觉复刻", "outline")
+            self._table_render_mode_combo.setToolTip(
+                "单线雕刻适合直接出 G-code；视觉复刻更接近屏幕排版，但路径更多。"
+            )
+            self._table_render_mode_combo.setCurrentIndex(
+                1 if str(getattr(self._cfg, "table_render_mode", "stroke")) == "outline" else 0
+            )
+            self._table_render_mode_combo.currentIndexChanged.connect(self._on_table_render_mode_changed)
+            mode_col = QVBoxLayout()
+            mode_col.setContentsMargins(0, 0, 0, 0)
+            mode_col.setSpacing(2)
+            mode_lb = QLabel("表格模式")
+            mode_lb.setStyleSheet("color:#3d444d;font-size:12px;")
+            mode_col.addWidget(mode_lb)
+            mode_col.addWidget(self._table_render_mode_combo)
+            table_row.addLayout(mode_col)
+            table_note = QLabel("单线雕刻适合表格走线；视觉复刻保留字体外观，适合版式确认。")
+            table_note.setWordWrap(True)
+            table_note.setFixedWidth(220)
+            table_note.setStyleSheet("color:#6b7280;font-size:12px;")
+            table_row.addWidget(table_note)
             table_row.addWidget(
                 self._create_ribbon_big_button(
                     "上方插入行",
@@ -2920,6 +2988,29 @@ class MainWindowFluent(FluentWindow):
             row.addWidget(table_group)
         elif mode == "slides":
             slide_group, slide_row = self._build_ribbon_group("幻灯片")
+            self._slides_render_mode_combo = ComboBox()
+            self._slides_render_mode_combo.addItem("单线雕刻", "stroke")
+            self._slides_render_mode_combo.addItem("视觉复刻", "outline")
+            self._slides_render_mode_combo.setToolTip(
+                "单线雕刻适合稳定出 G-code；视觉复刻更接近 PPT 文字外观和母版排版。"
+            )
+            self._slides_render_mode_combo.setCurrentIndex(
+                1 if str(getattr(self._cfg, "slides_render_mode", "stroke")) == "outline" else 0
+            )
+            self._slides_render_mode_combo.currentIndexChanged.connect(self._on_slides_render_mode_changed)
+            mode_col = QVBoxLayout()
+            mode_col.setContentsMargins(0, 0, 0, 0)
+            mode_col.setSpacing(2)
+            mode_lb = QLabel("演示模式")
+            mode_lb.setStyleSheet("color:#3d444d;font-size:12px;")
+            mode_col.addWidget(mode_lb)
+            mode_col.addWidget(self._slides_render_mode_combo)
+            slide_row.addLayout(mode_col)
+            slide_note = QLabel("单线雕刻更适合加工；视觉复刻会连同母版文字一起更接近演示外观。")
+            slide_note.setWordWrap(True)
+            slide_note.setFixedWidth(220)
+            slide_note.setStyleSheet("color:#6b7280;font-size:12px;")
+            slide_row.addWidget(slide_note)
             slide_row.addWidget(
                 self._create_ribbon_big_button(
                     "新建页",
@@ -2952,6 +3043,24 @@ class MainWindowFluent(FluentWindow):
             row.addWidget(slide_group)
         else:
             word_group, word_row = self._build_ribbon_group("文稿")
+            self._word_render_mode_combo = ComboBox()
+            self._word_render_mode_combo.addItem("单线雕刻", "stroke")
+            self._word_render_mode_combo.addItem("视觉复刻", "outline")
+            self._word_render_mode_combo.setToolTip(
+                "单线雕刻适合字库走线；视觉复刻更接近屏幕字体外观，但路径更多。"
+            )
+            self._word_render_mode_combo.setCurrentIndex(
+                1 if str(getattr(self._cfg, "word_render_mode", "stroke")) == "outline" else 0
+            )
+            self._word_render_mode_combo.currentIndexChanged.connect(self._on_word_render_mode_changed)
+            mode_col = QVBoxLayout()
+            mode_col.setContentsMargins(0, 0, 0, 0)
+            mode_col.setSpacing(2)
+            mode_lb = QLabel("文字模式")
+            mode_lb.setStyleSheet("color:#3d444d;font-size:12px;")
+            mode_col.addWidget(mode_lb)
+            mode_col.addWidget(self._word_render_mode_combo)
+            word_row.addLayout(mode_col)
             note = QLabel("文字页以笔画字形和版式为主，插入页主要承担符号、Markdown 和素材导入。")
             note.setWordWrap(True)
             note.setFixedWidth(240)
@@ -3514,7 +3623,7 @@ class MainWindowFluent(FluentWindow):
         if pid == "table":
             try:
                 tr, tc = self._table_editor.row_column_count()
-                extra = f"表格：{tr}×{tc}"
+                extra = f"表格：{tr}×{tc}   模式：{self._table_render_mode_label()}"
                 grid_mode = str(getattr(self._table_editor, "grid_gcode_mode", lambda: "none")())
                 if grid_mode == "outer":
                     extra += "   网格：仅外框"
@@ -3525,11 +3634,17 @@ class MainWindowFluent(FluentWindow):
                 return ""
         if pid == "slides":
             try:
-                return self._presentation_editor.status_line()
+                return (
+                    f"{self._presentation_editor.status_line()}"
+                    f"   模式：{self._slides_render_mode_label()}"
+                )
             except Exception:
                 return ""
         try:
-            return f"字数：{_count_visible_chars(self._word_editor.toPlainText())}"
+            return (
+                f"字数：{_count_visible_chars(self._word_editor.toPlainText())}"
+                f"   模式：{self._word_render_mode_label()}"
+            )
         except Exception:
             return ""
 
@@ -3652,6 +3767,12 @@ class MainWindowFluent(FluentWindow):
             f"{float(getattr(self._cfg, 'page_height_mm', 0.0)):.1f} mm\n"
             f"抬落笔：{pen}"
         )
+        if pid == "word":
+            summary += f"\n文字模式：{self._word_render_mode_label()}"
+        elif pid == "table":
+            summary += f"\n表格模式：{self._table_render_mode_label()}"
+        elif pid == "slides":
+            summary += f"\n演示模式：{self._slides_render_mode_label()}"
         glyph_warning = self._glyph_warning_summary(pid)
         if glyph_warning:
             summary += f"\n注意：{glyph_warning}"
@@ -5473,8 +5594,11 @@ class MainWindowFluent(FluentWindow):
         elif content_pid == "slides":
             base = self._slides_paths()
         else:
-            text_lines = stroke_editor_to_layout_lines(self._word_editor, self._cfg)
-            base = map_document_lines(self._mapper, text_lines, mm_per_pt=mm_per_pt)
+            if hasattr(self, "_word_editor") and self._word_editor.render_mode() == "outline":
+                base = self._word_editor.to_outline_paths()
+            else:
+                text_lines = stroke_editor_to_layout_lines(self._word_editor, self._cfg)
+                base = map_document_lines(self._mapper, text_lines, mm_per_pt=mm_per_pt)
 
         return list(base) + list(self._sketch_paths) + list(self._scaled_insert_paths())
 
@@ -5490,8 +5614,11 @@ class MainWindowFluent(FluentWindow):
             0.05,
             self._cfg.page_width_mm / max(1, int(self._preview.viewport().width())),
         )
-        lines = self._table_editor.to_layout_lines(mm_per_px)
-        text_paths = map_document_lines(self._mapper, lines, mm_per_pt=float(self._cfg.mm_per_pt))
+        if str(getattr(self._cfg, "table_render_mode", "stroke") or "stroke").strip().lower() == "outline":
+            text_paths = self._table_editor.to_outline_paths(mm_per_px)
+        else:
+            lines = self._table_editor.to_layout_lines(mm_per_px)
+            text_paths = map_document_lines(self._mapper, lines, mm_per_pt=float(self._cfg.mm_per_pt))
         return list(text_paths) + list(self._table_editor.to_grid_paths())
 
     def _slides_paths(self) -> List[VectorPath]:
@@ -5501,12 +5628,37 @@ class MainWindowFluent(FluentWindow):
         def _mm_px(ed) -> float:
             return max(0.05, self._cfg.page_width_mm / max(1, ed.viewport().width()))
 
+        if str(getattr(self._cfg, "slides_render_mode", "stroke") or "stroke").strip().lower() == "outline":
+            return self._presentation_editor.to_outline_paths_all_slides(mm_per_px_resolver=_mm_px)
         lines = self._presentation_editor.to_layout_lines_all_slides(mm_per_px_resolver=_mm_px)
         return map_document_lines(self._mapper, lines, mm_per_pt=mm_per_pt)
 
     def _on_stroke_line_spacing_changed(self, value: float) -> None:
         if hasattr(self, "_word_editor"):
             self._word_editor.set_line_spacing(float(value))
+
+    def _on_word_render_mode_changed(self, _index: int = 0) -> None:
+        if not hasattr(self, "_word_editor") or not hasattr(self, "_word_render_mode_combo"):
+            return
+        mode = str(self._word_render_mode_combo.currentData() or "stroke")
+        self._cfg.word_render_mode = mode
+        self._word_editor.set_render_mode(mode)
+        self._refresh_preview()
+        self._update_status_line()
+
+    def _on_table_render_mode_changed(self, _index: int = 0) -> None:
+        if not hasattr(self, "_table_render_mode_combo"):
+            return
+        self._cfg.table_render_mode = str(self._table_render_mode_combo.currentData() or "stroke")
+        self._refresh_preview()
+        self._update_status_line()
+
+    def _on_slides_render_mode_changed(self, _index: int = 0) -> None:
+        if not hasattr(self, "_slides_render_mode_combo"):
+            return
+        self._cfg.slides_render_mode = str(self._slides_render_mode_combo.currentData() or "stroke")
+        self._refresh_preview()
+        self._update_status_line()
 
     def _preview_zoom_step(self, factor: float) -> None:
         self._preview_zoom = max(0.1, min(5.0, float(self._preview_zoom) * float(factor)))
@@ -6211,9 +6363,12 @@ class MainWindowFluent(FluentWindow):
             return
         summary = self._build_job_summary(paths).replace("\n", "；")
         self._log_event("导出", f"G-code 已导出到 {Path(path).name}")
+        pid = self._current_content_page_id()
         self._notify_success(
             "已导出",
-            f"G-code 已写入 {Path(path).name}。{summary}。建议先做小范围试写。",
+            f"G-code 已写入 {Path(path).name}。{summary}。"
+            f"当前模式：{self._current_render_mode_label(pid)}。"
+            f"{self._current_render_mode_tip(pid)} 建议先做小范围试写。",
         )
         glyph_warning = self._glyph_warning_summary(self._current_content_page_id())
         if glyph_warning:
