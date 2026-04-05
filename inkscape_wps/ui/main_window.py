@@ -1096,6 +1096,16 @@ class MainWindow(QMainWindow):
 
     def _open_table_context_menu(self, pos) -> None:  # noqa: ANN001
         tw = self._table_editor.table_widget()
+        idx = tw.indexAt(pos)
+        if idx.isValid():
+            row = int(idx.row())
+            col = int(idx.column())
+            in_selection = any(
+                rng.topRow() <= row <= rng.bottomRow() and rng.leftColumn() <= col <= rng.rightColumn()
+                for rng in tw.selectedRanges()
+            )
+            if not in_selection:
+                tw.setCurrentCell(row, col)
         global_pos = tw.viewport().mapToGlobal(pos)
         menu = QMenu(self)
         menu.addAction("上方插入行", self._table_editor.insert_row_above)
@@ -1380,7 +1390,7 @@ class MainWindow(QMainWindow):
                         parts.append(text)
             return "\n".join(parts)
         if pid == "slides":
-            return "\n".join(self._presentation_editor.slides_storage())
+            return "\n".join(self._presentation_editor.slides_storage_for_export())
         return self._editor.toPlainText()
 
     def _glyph_status_hint(self, pid: str) -> str:

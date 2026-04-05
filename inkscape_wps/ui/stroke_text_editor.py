@@ -91,6 +91,11 @@ class StrokeTextEditor(QWidget):
         setattr(self._cfg, "stroke_editor_line_spacing", self._layout.line_spacing)
         self._emit_changed()
 
+    def set_mapper(self, mapper: HersheyFontMapper) -> None:
+        """切换单线字库映射器，并立即重排当前内容。"""
+        self._mapper = mapper
+        self._emit_changed()
+
     def _on_blink(self) -> None:
         self._caret_visible = not self._caret_visible
         self.update()

@@ -125,6 +125,7 @@ from inkscape_wps.core.project_io import (
     serialize_vector_paths,
     write_text_atomic,
 )
+from inkscape_wps.core.kdraw_paths import suggest_gcode_fonts_dirs
 from inkscape_wps.core.raster_trace import trace_image_to_svg
 from inkscape_wps.core.serial_discovery import filter_ports, list_port_infos
 from inkscape_wps.core.svg_import import vector_paths_from_svg_file, vector_paths_from_svg_string
@@ -188,6 +189,8 @@ class MainWindowFluent(FluentWindow):
         self._job_state_text = "就绪"
         self._job_progress = (0, 0)
         self._pending_program_after_m800: Optional[List[str]] = None
+        self._log_records: List[tuple[str, str]] = []
+        self._log_filter = "全部"
 
         self._sketch_paths: List[VectorPath] = []
         self._insert_paths_base: List[VectorPath] = []
@@ -501,6 +504,435 @@ class MainWindowFluent(FluentWindow):
 
     def _notify_error(self, title: str, content: str) -> None:
         InfoBar.error(title, content, parent=self, position=InfoBarPosition.TOP)
+
+    def _log_event(self, category: str, message: str, *, level: str = "INFO") -> None:
+        stamp = datetime.now().strftime("%H:%M:%S")
+        self._log_append(f"{stamp} [{category}/{level}] {message}", category=category)
+
+    def _recent_log_excerpt(self, limit: int = 80) -> str:
+        lines = [line for _category, line in self._log_records]
+        if not lines:
+            return "暂无运行日志。"
+        if len(lines) <= limit:
+            return "\n".join(lines)
+        return "\n".join(lines[-limit:])
+
+    def _render_log_views(self) -> None:
+        if self._log_filter == "全部":
+            lines = [line for _category, line in self._log_records]
+        else:
+            lines = [line for category, line in self._log_records if category == self._log_filter]
+        text = "\n".join(lines)
+        if hasattr(self, "_log"):
+            self._log.setPlainText(text)
+        if hasattr(self, "_dev_log"):
+            self._dev_log.setPlainText(text)
+
+    def _sync_log_filter_widgets(self) -> None:
+        for name in ("_log_filter_combo", "_dev_log_filter_combo"):
+            combo = getattr(self, name, None)
+            if combo is None:
+                continue
+            idx = combo.findText(self._log_filter)
+            if idx >= 0 and combo.currentIndex() != idx:
+                combo.blockSignals(True)
+                combo.setCurrentIndex(idx)
+                combo.blockSignals(False)
+
+    def _set_log_filter(self, value: str) -> None:
+        self._log_filter = str(value or "全部")
+        self._sync_log_filter_widgets()
+        self._render_log_views()
+
+    def _clear_logs(self) -> None:
+        self._log_records.clear()
+        self._render_log_views()
+        self._notify_info("日志", "运行日志已清空。")
+
+    def _table_grid_mode_label(self) -> str:
+        try:
+            mode = str(self._table_editor.grid_gcode_mode() or "none")
+        except Exception:
+            mode = "none"
+        return {
+            "none": "不导出",
+            "outer": "仅外框",
+            "all": "全部网格",
+        }.get(mode, "不导出")
+
+    def _preflight_report(self) -> tuple[str, List[str]]:
+        pid = self._current_content_page_id()
+        source = self._content_mode_label(pid)
+        text = self._current_content_plain_text_for_glyph_check(pid)
+        missing = self._missing_glyph_chars(pid)
+        paths = self._work_paths()
+        errors: List[str] = []
+        warnings: List[str] = []
+        infos: List[str] = []
+
+        infos.append(f"当前来源：{source}")
+        infos.append(
+            "纸张尺寸："
+            f"{float(getattr(self._cfg, 'page_width_mm', 0.0)):.1f} × "
+            f"{float(getattr(self._cfg, 'page_height_mm', 0.0)):.1f} mm"
+        )
+        infos.append(f"表格网格线：{self._table_grid_mode_label()}")
+        infos.append(f"设备连接：{'已连接' if self._grbl is not None else '未连接'}")
+
+        if pid == "slides":
+            infos.append(f"幻灯片数量：{self._presentation_editor.slide_count()}")
+        elif pid == "table":
+            rows, cols = self._table_editor.row_column_count()
+            infos.append(f"表格尺寸：{rows} × {cols}")
+        else:
+            infos.append(f"文本长度：{len(text.strip())} 字符")
+
+        if float(getattr(self._cfg, "page_width_mm", 0.0)) <= 0 or float(
+            getattr(self._cfg, "page_height_mm", 0.0)
+        ) <= 0:
+            errors.append("纸张尺寸必须大于 0，否则预览与 G-code 坐标范围会异常。")
+        if int(getattr(self._cfg, "draw_feed_rate", 0) or 0) <= 0:
+            errors.append("绘制进给速度必须大于 0。")
+
+        pen_mode = str(getattr(self._cfg, "gcode_pen_mode", "z") or "z").strip().lower()
+        if pen_mode in ("m3m5", "m3", "spindle"):
+            if int(getattr(self._cfg, "gcode_m3_s_value", 0) or 0) <= 0:
+                warnings.append("当前使用 M3/M5 抬落笔，但 S 值为 0，落笔输出可能无效。")
+        else:
+            z_up = float(getattr(self._cfg, "z_up_mm", 0.0))
+            z_down = float(getattr(self._cfg, "z_down_mm", 0.0))
+            if z_up <= z_down:
+                warnings.append("Z 轴抬笔高度未高于落笔高度，请核对抬落笔参数。")
+
+        if not text.strip() and pid in ("word", "slides"):
+            warnings.append(f"当前“{source}”没有文本内容。")
+        if not paths:
+            errors.append("当前内容还没有可导出的笔画路径。")
+        else:
+            point_count = sum(len(vp.points) for vp in paths)
+            infos.append(f"预览/导出路径：{len(paths)} 段，{point_count} 个点")
+
+        if missing:
+            preview = " ".join(missing[:8])
+            extra = " ..." if len(missing) > 8 else ""
+            warnings.append(f"存在 {len(missing)} 个缺失字符：{preview}{extra}")
+
+        if self._grbl is None:
+            warnings.append("当前未连接设备；导出文件不受影响，但发送到机床前需要先连接。")
+        else:
+            snap = self._machine_monitor.snapshot
+            infos.append(f"设备状态：{snap.state}")
+            if snap.last_alarm:
+                warnings.append(f"设备最近告警：{snap.last_alarm}")
+
+        if not errors and not warnings:
+            headline = "检查通过：当前可以直接导出或发送。"
+        elif errors:
+            headline = f"检查发现 {len(errors)} 个必须先处理的问题。"
+        else:
+            headline = f"检查发现 {len(warnings)} 个建议先确认的项目。"
+
+        lines = [headline, "", "当前状态"]
+        lines.extend(f"- {item}" for item in infos)
+        if warnings:
+            lines.append("")
+            lines.append("建议确认")
+            lines.extend(f"- {item}" for item in warnings)
+        if errors:
+            lines.append("")
+            lines.append("必须处理")
+            lines.extend(f"- {item}" for item in errors)
+        lines.append("")
+        lines.append("排查顺序：先看内容来源与缺字形，再看纸张/抬落笔，最后看设备连接与告警。")
+        return headline, lines
+
+    def _diagnostic_overview_text(self) -> str:
+        headline, lines = self._preflight_report()
+        if len(lines) >= 4:
+            return f"{headline}\n{lines[2]}  {lines[3].lstrip('- ')}"
+        return headline
+
+    def _health_status_payload(self) -> tuple[str, str, str, List[str]]:
+        pid = self._current_content_page_id()
+        source = self._content_mode_label(pid)
+        text = self._current_content_plain_text_for_glyph_check(pid)
+        missing = self._missing_glyph_chars(pid)
+        paths = self._work_paths()
+        errors: List[str] = []
+        warnings: List[str] = []
+        checks: List[str] = []
+
+        if paths:
+            checks.append(f"内容路径正常：{len(paths)} 段可用于预览/G-code")
+        else:
+            errors.append("当前内容还没有生成有效路径")
+
+        if missing:
+            warnings.append(f"缺字形 {len(missing)} 个")
+        else:
+            checks.append("字形覆盖正常")
+
+        if self._grbl is None:
+            warnings.append("设备未连接")
+        else:
+            snap = self._machine_monitor.snapshot
+            if snap.last_alarm:
+                warnings.append(f"设备告警：{snap.last_alarm}")
+            else:
+                checks.append(f"设备在线：{snap.state}")
+
+        if pid in ("word", "slides") and not text.strip():
+            warnings.append(f"{source}内容为空")
+
+        if errors:
+            return "error", "#c23b32", "需先处理", (errors + warnings + checks)[:3]
+        if warnings:
+            return "warn", "#b06a12", "建议确认", (warnings + checks)[:3]
+        return "ok", "#217346", "可以开始", checks[:3] or ["当前状态正常"]
+
+    def _health_primary_action_spec(self) -> tuple[str, str, str]:
+        pid = self._current_content_page_id()
+        source = self._content_mode_label(pid)
+        text = self._current_content_plain_text_for_glyph_check(pid)
+        missing = self._missing_glyph_chars(pid)
+        paths = self._work_paths()
+        pen_mode = str(getattr(self._cfg, "gcode_pen_mode", "z") or "z").strip().lower()
+
+        if missing:
+            return "missing", "查看缺失字符", "优先补齐字形覆盖，避免预览或 G-code 缺笔画。"
+        if not paths:
+            return "content", f"回到{source}", "先补充当前内容，生成可导出的路径。"
+        if self._grbl is None:
+            return "device", "去连接设备", "先到设备页连接串口或 TCP，再发送 G-code。"
+        snap = self._machine_monitor.snapshot
+        if snap.last_alarm:
+            return "device", "查看设备告警", "先到设备页确认告警、坐标和缓存状态。"
+        if pen_mode in ("m3m5", "m3", "spindle"):
+            if int(getattr(self._cfg, "gcode_m3_s_value", 0) or 0) <= 0:
+                return "device", "检查抬落笔参数", "当前 M3/M5 的 S 值为 0，请先核对。"
+        else:
+            z_up = float(getattr(self._cfg, "z_up_mm", 0.0))
+            z_down = float(getattr(self._cfg, "z_down_mm", 0.0))
+            if z_up <= z_down:
+                return "device", "检查抬落笔参数", "当前抬笔高度未高于落笔高度。"
+        if pid in ("word", "slides") and not text.strip():
+            return "content", f"回到{source}", "当前内容为空，先输入文本再导出。"
+        return "preflight", "查看完整检查", "打开完整检查单，确认导出和发送前状态。"
+
+    def _run_health_primary_action(self) -> None:
+        action, _label, tip = self._health_primary_action_spec()
+        if action == "missing":
+            self._show_missing_glyphs_dialog()
+            return
+        if action == "device":
+            self._open_device_page_with_hint(tip)
+            return
+        if action == "content":
+            pid = self._current_content_page_id()
+            if pid == "table" and self._table_page is not None:
+                self._safe_switch_to(self._table_page, "表格")
+            elif pid == "slides" and self._slides_page is not None:
+                self._safe_switch_to(self._slides_page, "演示")
+            elif self._word_page is not None:
+                self._safe_switch_to(self._word_page, "文字")
+            self._notify_info("继续处理", tip)
+            return
+        self._show_preflight_report()
+
+    def _set_health_card_state(self, card: QFrame, title: QLabel, detail: QLabel) -> None:
+        _level, color, badge, items = self._health_status_payload()
+        title.setText(f"健康检查  ·  {badge}")
+        detail.setText("\n".join(f"• {item}" for item in items))
+        card.setStyleSheet(
+            f"""
+            QFrame {{
+                background-color: #ffffff;
+                border: 1px solid {color};
+                border-radius: 14px;
+            }}
+            """
+        )
+        title.setStyleSheet(f"color:{color};font-size:13px;font-weight:700;")
+        detail.setStyleSheet("color:#52606d;font-size:12px;line-height:1.45;")
+
+    def _refresh_health_action_button(self, button: QPushButton) -> None:
+        _action, label, tip = self._health_primary_action_spec()
+        button.setText(label)
+        button.setToolTip(tip)
+
+    def _refresh_diagnostic_summary(self) -> None:
+        text = self._diagnostic_overview_text()
+        if hasattr(self, "_home_diag_summary"):
+            self._home_diag_summary.setText(text)
+        if hasattr(self, "_dev_diag_summary"):
+            self._dev_diag_summary.setText(text)
+        if hasattr(self, "_home_health_card"):
+            self._set_health_card_state(
+                self._home_health_card, self._home_health_title, self._home_health_detail
+            )
+        if hasattr(self, "_home_health_action_btn"):
+            self._refresh_health_action_button(self._home_health_action_btn)
+        if hasattr(self, "_dev_health_card"):
+            self._set_health_card_state(
+                self._dev_health_card, self._dev_health_title, self._dev_health_detail
+            )
+        if hasattr(self, "_dev_health_action_btn"):
+            self._refresh_health_action_button(self._dev_health_action_btn)
+
+    def _show_preflight_report(self) -> None:
+        headline, lines = self._preflight_report()
+        self._log_event("预检", headline, level="WARN" if "问题" in headline else "INFO")
+        box = QMessageBox(self)
+        box.setWindowTitle("开始加工前检查")
+        box.setIcon(
+            QMessageBox.Warning
+            if "问题" in headline or "建议" in headline
+            else QMessageBox.Information
+        )
+        box.setText(headline)
+        box.setInformativeText("这份检查单按当前预览来源生成，可直接用于导出前或发送前复核。")
+        box.setDetailedText("\n".join(lines))
+        box.exec()
+
+    def _show_diagnostics_report(self) -> None:
+        headline, lines = self._preflight_report()
+        self._log_event("诊断", "打开诊断面板", level="INFO")
+        box = QMessageBox(self)
+        box.setWindowTitle("诊断报告")
+        box.setIcon(QMessageBox.Information)
+        box.setText(headline)
+        box.setInformativeText("详细内容包含当前检查结果和最近运行日志。")
+        box.setDetailedText(
+            "\n".join(lines)
+            + "\n\nSVG / 位图导入诊断\n"
+            + "\n".join(self._svg_diagnostic_lines())
+            + "\n\n奎享 / 字库诊断\n"
+            + "\n".join(self._font_diagnostic_lines())
+            + "\n\n最近运行日志\n"
+            + self._recent_log_excerpt()
+        )
+        box.exec()
+
+    def _svg_diagnostic_lines(self) -> List[str]:
+        out: List[str] = []
+        inserted = len(self._insert_paths_base)
+        total_points = sum(len(vp.points) for vp in self._insert_paths_base)
+        out.append(f"- 当前插入矢量段数：{inserted}")
+        out.append(f"- 当前插入矢量点数：{total_points}")
+        out.append(f"- 当前插图缩放：{self._insert_vector_scale:.3f}")
+        out.append(
+            f"- 当前插图偏移：X {self._insert_vector_dx_mm:.2f} mm / Y {self._insert_vector_dy_mm:.2f} mm"
+        )
+        if not self._insert_paths_base:
+            out.append("- 未检测到插入矢量。若 SVG 导入后无图形，请先确认文件内是否真的含 path/polyline/line/rect 等可转折线元素。")
+            out.append("- 若是位图描摹失败，请先提高原图黑白对比度，再重试描摹。")
+            return out
+        bb = paths_bounding_box(self._insert_paths_base)
+        out.append(
+            f"- 插入矢量包围盒：X {bb[0]:.2f}..{bb[2]:.2f} / Y {bb[1]:.2f}..{bb[3]:.2f} mm"
+        )
+        out.append("- 若预览有图但 G-code 没有线，请继续检查：页面尺寸、镜像/偏移、以及最终工作路径是否为空。")
+        return out
+
+    def _font_diagnostic_lines(self) -> List[str]:
+        out: List[str] = []
+        base_font = _resolve_stroke_font_path(self._cfg)
+        merge_font = _resolve_merge_stroke_font_path(self._cfg)
+        out.append(f"- 主字库：{base_font if base_font is not None else '未找到'}")
+        out.append(f"- 合并字库：{merge_font if merge_font is not None else '未设置'}")
+        out.append(f"- 奎享 mm/unit：{float(getattr(self._cfg, 'kuixiang_mm_per_unit', 0.01530)):.5f}")
+        pid = self._current_content_page_id()
+        missing = self._missing_glyph_chars(pid)
+        out.append(f"- 当前内容缺字形数量：{len(missing)}")
+        if missing:
+            preview = " ".join(missing[:12])
+            if len(missing) > 12:
+                preview += " ..."
+            out.append(f"- 缺失字符预览：{preview}")
+            out.append("- 若使用奎享 JSON，请先确认该 JSON 是已导出的文本字库，而不是原始 .gfont 二进制。")
+            out.append("- 若已修改 mm/unit，已载入的奎享字形不会自动重算；建议重新加载字库后再检查。")
+        else:
+            out.append("- 当前内容字形覆盖正常。若仍有缺笔画，更可能是路径过小、参数过细或字库本身笔画定义不完整。")
+        return out
+
+    def _show_svg_diagnostics(self) -> None:
+        self._log_event("诊断", "打开 SVG / 位图导入诊断", level="INFO")
+        box = QMessageBox(self)
+        box.setWindowTitle("SVG / 位图导入诊断")
+        box.setIcon(QMessageBox.Information)
+        box.setText("已生成 SVG / 位图导入诊断。")
+        box.setDetailedText("\n".join(self._svg_diagnostic_lines()))
+        btn_svg = box.addButton("重新导入 SVG", QMessageBox.ActionRole)
+        btn_trace = box.addButton("重新描摹图片", QMessageBox.ActionRole)
+        btn_clear = box.addButton("清除插图", QMessageBox.ActionRole)
+        box.addButton(QMessageBox.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is btn_svg:
+            self._insert_svg_from_dialog()
+        elif clicked is btn_trace:
+            self._insert_bitmap_traced()
+        elif clicked is btn_clear:
+            self._clear_inserted_vectors()
+
+    def _show_font_diagnostics(self) -> None:
+        self._log_event("诊断", "打开奎享 / 字库诊断", level="INFO")
+        box = QMessageBox(self)
+        box.setWindowTitle("奎享 / 字库诊断")
+        box.setIcon(QMessageBox.Information)
+        box.setText("已生成奎享 / 字库诊断。")
+        box.setDetailedText("\n".join(self._font_diagnostic_lines()))
+        btn_missing = box.addButton("查看缺失字符", QMessageBox.ActionRole)
+        btn_reset = box.addButton("恢复默认字库", QMessageBox.ActionRole)
+        btn_clear_merge = box.addButton("清除合并字库", QMessageBox.ActionRole)
+        btn_kdraw = box.addButton("打开 KDraw 字库目录", QMessageBox.ActionRole)
+        box.addButton(QMessageBox.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is btn_missing:
+            self._show_missing_glyphs_dialog()
+        elif clicked is btn_reset:
+            self._reset_stroke_font_to_bundled()
+        elif clicked is btn_clear_merge:
+            self._clear_stroke_merge_json()
+        elif clicked is btn_kdraw:
+            self._open_kdraw_gcode_fonts_dir()
+
+    def _remap_stroke_font(self) -> None:
+        self._mapper = HersheyFontMapper(
+            _resolve_stroke_font_path(self._cfg),
+            merge_font_path=_resolve_merge_stroke_font_path(self._cfg),
+            kuixiang_mm_per_unit=self._cfg.kuixiang_mm_per_unit,
+        )
+        self._mapper.preload_background()
+        if hasattr(self, "_word_editor"):
+            self._word_editor.set_mapper(self._mapper)
+        self._refresh_preview()
+        self._update_status_line()
+
+    def _clear_stroke_merge_json(self) -> None:
+        self._cfg.stroke_font_merge_json_path = ""
+        self._remap_stroke_font()
+        self._log_event("字库", "已清除合并字库", level="INFO")
+        self._notify_success("字库", "已清除合并字库。")
+
+    def _reset_stroke_font_to_bundled(self) -> None:
+        self._cfg.stroke_font_json_path = ""
+        self._remap_stroke_font()
+        self._log_event("字库", "已恢复包内默认字库", level="INFO")
+        self._notify_success("字库", "已恢复包内默认字库。")
+
+    def _open_kdraw_gcode_fonts_dir(self) -> None:
+        dirs = suggest_gcode_fonts_dirs()
+        if not dirs:
+            QMessageBox.information(
+                self,
+                "KDraw 字库",
+                "未检测到常见安装路径下的 gcodeFonts。\n"
+                "若已安装奎享 KDraw，可将 .gfont 用 grblapp 的导出工具转为 JSON 后再导入本应用。",
+            )
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(dirs[0].resolve())))
 
     def _set_backstage_detail_empty(
         self, message: str, *, action_text: str = "打开选中文件"
@@ -940,6 +1372,40 @@ class MainWindowFluent(FluentWindow):
         _home_hint.setWordWrap(True)
         _home_hint.setStyleSheet("color:#52606d;font-size:12px;")
         hl.addWidget(_home_hint)
+        self._home_health_card = QFrame()
+        home_health_layout = QVBoxLayout(self._home_health_card)
+        home_health_layout.setContentsMargins(14, 14, 14, 14)
+        home_health_layout.setSpacing(6)
+        self._home_health_title = QLabel("健康检查")
+        self._home_health_detail = QLabel()
+        self._home_health_detail.setWordWrap(True)
+        home_health_layout.addWidget(self._home_health_title)
+        home_health_layout.addWidget(self._home_health_detail)
+        self._home_health_action_btn = PrimaryPushButton("查看完整检查")
+        self._home_health_action_btn.clicked.connect(self._run_health_primary_action)
+        home_health_layout.addWidget(self._home_health_action_btn)
+        hl.addWidget(self._home_health_card)
+        self._home_diag_summary = QLabel()
+        self._home_diag_summary.setWordWrap(True)
+        self._home_diag_summary.setStyleSheet("color:#52606d;font-size:12px;")
+        hl.addWidget(
+            self._create_info_panel(
+                "开始前检查",
+                "导出或发送前，先看这一条摘要；如果出现缺字形、空路径或设备未连接，会直接在这里暴露。",
+                accent="#b06a12",
+            )
+        )
+        hl.addWidget(self._home_diag_summary)
+        home_diag_row = QHBoxLayout()
+        home_diag_row.setSpacing(8)
+        btn_home_preflight = PushButton("开始加工前检查")
+        btn_home_preflight.clicked.connect(self._show_preflight_report)
+        btn_home_diag = PushButton("查看诊断")
+        btn_home_diag.clicked.connect(self._show_diagnostics_report)
+        home_diag_row.addWidget(btn_home_preflight)
+        home_diag_row.addWidget(btn_home_diag)
+        home_diag_row.addStretch(1)
+        hl.addLayout(home_diag_row)
         hl.addWidget(
             self._create_info_panel(
                 "当前工作台",
@@ -959,10 +1425,25 @@ class MainWindowFluent(FluentWindow):
         self._preview.customContextMenuRequested.connect(
             lambda pos: self._open_preview_context_menu(self._preview.mapToGlobal(pos))
         )
+        log_tools = QWidget()
+        log_tools_l = QHBoxLayout(log_tools)
+        log_tools_l.setContentsMargins(0, 0, 0, 0)
+        log_tools_l.setSpacing(8)
+        log_tools_l.addWidget(QLabel("日志筛选"))
+        self._log_filter_combo = ComboBox()
+        for item in ("全部", "导出", "发送", "设备", "预检", "诊断", "运行"):
+            self._log_filter_combo.addItem(item)
+        self._log_filter_combo.currentTextChanged.connect(self._set_log_filter)
+        log_tools_l.addWidget(self._log_filter_combo)
+        btn_clear_logs = PushButton("清空日志")
+        btn_clear_logs.clicked.connect(self._clear_logs)
+        log_tools_l.addWidget(btn_clear_logs)
+        log_tools_l.addStretch(1)
         self._log = PlainTextEdit()
         self._log.setReadOnly(True)
         self._log.setPlaceholderText("日志：预览刷新与部分状态；串口收发详情见「设备」页右侧。")
         tv.addWidget(self._build_task_pane_card("路径预览", self._preview), 3)
+        tv.addWidget(self._build_task_pane_card("日志筛选", log_tools), 0)
         tv.addWidget(self._build_task_pane_card("运行日志", self._log), 2)
         split.addWidget(home_left)
         split.addWidget(task_wrap)
@@ -1577,6 +2058,33 @@ class MainWindowFluent(FluentWindow):
         self._dev_connection_hint.setWordWrap(True)
         self._dev_connection_hint.setStyleSheet("color:#66727e;font-size:12px;")
         hero_layout.addWidget(self._dev_connection_hint)
+        self._dev_health_card = QFrame()
+        dev_health_layout = QVBoxLayout(self._dev_health_card)
+        dev_health_layout.setContentsMargins(14, 14, 14, 14)
+        dev_health_layout.setSpacing(6)
+        self._dev_health_title = QLabel("健康检查")
+        self._dev_health_detail = QLabel()
+        self._dev_health_detail.setWordWrap(True)
+        dev_health_layout.addWidget(self._dev_health_title)
+        dev_health_layout.addWidget(self._dev_health_detail)
+        self._dev_health_action_btn = PrimaryPushButton("查看完整检查")
+        self._dev_health_action_btn.clicked.connect(self._run_health_primary_action)
+        dev_health_layout.addWidget(self._dev_health_action_btn)
+        hero_layout.addWidget(self._dev_health_card)
+        self._dev_diag_summary = QLabel()
+        self._dev_diag_summary.setWordWrap(True)
+        self._dev_diag_summary.setStyleSheet("color:#52606d;font-size:12px;")
+        hero_layout.addWidget(self._dev_diag_summary)
+        hero_actions = QHBoxLayout()
+        hero_actions.setSpacing(8)
+        btn_preflight = PushButton("开始加工前检查")
+        btn_preflight.clicked.connect(self._show_preflight_report)
+        btn_diag = PushButton("查看诊断")
+        btn_diag.clicked.connect(self._show_diagnostics_report)
+        hero_actions.addWidget(btn_preflight)
+        hero_actions.addWidget(btn_diag)
+        hero_actions.addStretch(1)
+        hero_layout.addLayout(hero_actions)
         right_layout.addWidget(hero)
 
         summary_grid = QGridLayout()
@@ -1606,6 +2114,21 @@ class MainWindowFluent(FluentWindow):
         summary_grid.addWidget(alarm_card, 2, 1)
         right_layout.addLayout(summary_grid)
 
+        dev_log_tools = QWidget()
+        dev_log_tools_l = QHBoxLayout(dev_log_tools)
+        dev_log_tools_l.setContentsMargins(0, 0, 0, 0)
+        dev_log_tools_l.setSpacing(8)
+        dev_log_tools_l.addWidget(QLabel("日志筛选"))
+        self._dev_log_filter_combo = ComboBox()
+        for item in ("全部", "导出", "发送", "设备", "预检", "诊断", "运行"):
+            self._dev_log_filter_combo.addItem(item)
+        self._dev_log_filter_combo.currentTextChanged.connect(self._set_log_filter)
+        dev_log_tools_l.addWidget(self._dev_log_filter_combo)
+        btn_clear_dev_logs = PushButton("清空日志")
+        btn_clear_dev_logs.clicked.connect(self._clear_logs)
+        dev_log_tools_l.addWidget(btn_clear_dev_logs)
+        dev_log_tools_l.addStretch(1)
+        right_layout.addWidget(dev_log_tools)
         self._dev_log = PlainTextEdit()
         self._dev_log.setReadOnly(True)
         self._dev_log.setPlaceholderText("设备日志…")
@@ -1674,10 +2197,22 @@ class MainWindowFluent(FluentWindow):
         btn_ai.clicked.connect(self._open_ai_prompts_document)
         btn_missing = PushButton("查看缺失字符")
         btn_missing.clicked.connect(self._show_missing_glyphs_dialog)
+        btn_svg_diag = PushButton("SVG 导入诊断")
+        btn_svg_diag.clicked.connect(self._show_svg_diagnostics)
+        btn_font_diag = PushButton("奎享/字库诊断")
+        btn_font_diag.clicked.connect(self._show_font_diagnostics)
+        btn_preflight_help = PushButton("开始加工前检查")
+        btn_preflight_help.clicked.connect(self._show_preflight_report)
+        btn_diag_help = PushButton("查看诊断")
+        btn_diag_help.clicked.connect(self._show_diagnostics_report)
         help_layout.addWidget(btn_quick)
         help_layout.addWidget(btn_spec)
         help_layout.addWidget(btn_ai)
         help_layout.addWidget(btn_missing)
+        help_layout.addWidget(btn_svg_diag)
+        help_layout.addWidget(btn_font_diag)
+        help_layout.addWidget(btn_preflight_help)
+        help_layout.addWidget(btn_diag_help)
         hv.addWidget(help_actions)
         hv.addWidget(
             self._create_info_panel(
@@ -4270,6 +4805,7 @@ class MainWindowFluent(FluentWindow):
             self._status_line.setText(html_module.escape(status_text))
             self._status_line.setToolTip("")
         self._refresh_device_summary()
+        self._refresh_diagnostic_summary()
         self._refresh_backstage_info()
 
     def _refresh_device_summary(self) -> None:
@@ -5645,9 +6181,11 @@ class MainWindowFluent(FluentWindow):
         if not path:
             return
         self._sync_device_machine_widgets_to_cfg()
+        self._log_event("导出", "开始导出 G-code", level="INFO")
         try:
             paths = self._current_work_paths_checked()
         except ValueError as e:
+            self._log_event("导出", f"G-code 导出前检查失败：{e}", level="ERROR")
             self._notify_error("导出失败", str(e))
             return
         # 与右侧预览一致：输出当前 work paths
@@ -5655,9 +6193,11 @@ class MainWindowFluent(FluentWindow):
         try:
             write_text_atomic(Path(path), g)
         except Exception as e:
+            self._log_event("导出", f"{Path(path).name} 写入失败：{e}", level="ERROR")
             self._notify_error("导出失败", f"{Path(path).name} 写入失败：{e}")
             return
         summary = self._build_job_summary(paths).replace("\n", "；")
+        self._log_event("导出", f"G-code 已导出到 {Path(path).name}")
         self._notify_success(
             "已导出",
             f"G-code 已写入 {Path(path).name}。{summary}。建议先做小范围试写。",
@@ -5682,11 +6222,14 @@ class MainWindowFluent(FluentWindow):
             paragraphs, src_html = self._docx_export_payload()
             export_docx(Path(path), paragraphs=paragraphs, html_text=src_html, prefer_soffice=True)
         except OfficeExportError as e:
+            self._log_event("导出", f"DOCX 导出失败：{e}", level="ERROR")
             self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
             return
         except Exception as e:
+            self._log_event("导出", f"DOCX 导出异常：{e}", level="ERROR")
             self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
             return
+        self._log_event("导出", f"DOCX 已导出到 {Path(path).name}")
         self._notify_success("已导出", f"DOCX 已生成：{Path(path).name}")
 
     def _export_xlsx(self) -> None:
@@ -5702,14 +6245,18 @@ class MainWindowFluent(FluentWindow):
             self._require_export_source("table", "XLSX")
             export_xlsx(Path(path), table_blob=self._capture_table_blob(), prefer_soffice=True)
         except ValueError as e:
+            self._log_event("导出", f"XLSX 导出前检查失败：{e}", level="ERROR")
             self._notify_error("导出失败", str(e))
             return
         except OfficeExportError as e:
+            self._log_event("导出", f"XLSX 导出失败：{e}", level="ERROR")
             self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
             return
         except Exception as e:
+            self._log_event("导出", f"XLSX 导出异常：{e}", level="ERROR")
             self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
             return
+        self._log_event("导出", f"XLSX 已导出到 {Path(path).name}")
         self._notify_success("已导出", f"XLSX 已生成：{Path(path).name}")
 
     def _export_pptx(self) -> None:
@@ -5730,14 +6277,18 @@ class MainWindowFluent(FluentWindow):
                 prefer_soffice=True,
             )
         except ValueError as e:
+            self._log_event("导出", f"PPTX 导出前检查失败：{e}", level="ERROR")
             self._notify_error("导出失败", str(e))
             return
         except OfficeExportError as e:
+            self._log_event("导出", f"PPTX 导出失败：{e}", level="ERROR")
             self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
             return
         except Exception as e:
+            self._log_event("导出", f"PPTX 导出异常：{e}", level="ERROR")
             self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
             return
+        self._log_event("导出", f"PPTX 已导出到 {Path(path).name}")
         self._notify_success("已导出", f"PPTX 已生成：{Path(path).name}")
 
     def _slides_plain_to_markdown(self) -> str:
@@ -5817,8 +6368,10 @@ class MainWindowFluent(FluentWindow):
         try:
             export_markdown(Path(path), body=body)
         except Exception as e:
+            self._log_event("导出", f"Markdown 导出失败：{e}", level="ERROR")
             self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
             return
+        self._log_event("导出", f"Markdown 已导出到 {Path(path).name}")
         self._notify_success("已导出", f"Markdown 已生成：{Path(path).name}")
 
     def _docx_paragraphs_from_editor_widget(self, ed) -> List[DocParagraph]:  # noqa: ANN001
@@ -5886,10 +6439,9 @@ class MainWindowFluent(FluentWindow):
         return "未检测到 soffice（使用纯 Python 导出）"
 
     # ---------- 串口 / GRBL ----------
-    def _log_append(self, s: str) -> None:
-        self._log.appendPlainText(str(s))
-        if hasattr(self, "_dev_log"):
-            self._dev_log.appendPlainText(str(s))
+    def _log_append(self, s: str, *, category: str = "运行") -> None:
+        self._log_records.append((str(category or "运行"), str(s)))
+        self._render_log_views()
 
     def _refresh_ports(self) -> None:
         if not hasattr(self, "_port_combo"):
@@ -5930,7 +6482,7 @@ class MainWindowFluent(FluentWindow):
             self._btn_reset.setEnabled(False)
             self._pending_program_after_m800 = None
             self._set_job_status("就绪", 0, 0)
-            self._log_append("已断开设备连接")
+            self._log_event("设备", "已断开设备连接")
             self._update_action_states()
             self._update_status_line()
             return
@@ -5987,10 +6539,11 @@ class MainWindowFluent(FluentWindow):
             self._btn_paper_flow.setEnabled(True)
             self._btn_reset.setEnabled(True)
             self._set_job_status("就绪", 0, 0)
-            self._log_append(f"已连接 {target_desc}")
+            self._log_event("设备", f"已连接 {target_desc}")
             self._update_action_states()
             self._update_status_line()
         except Exception as e:
+            self._log_event("设备", f"连接失败：{e}", level="ERROR")
             InfoBar.error("连接", str(e), parent=self, position=InfoBarPosition.TOP)
 
     def _on_grbl_status(self, d: dict) -> None:
@@ -6283,9 +6836,11 @@ class MainWindowFluent(FluentWindow):
             self._notify_error("发送失败", "请先连接设备，再发送当前 G-code。")
             return
         self._sync_device_machine_widgets_to_cfg()
+        self._log_event("发送", "开始发送当前 G-code", level="INFO")
         try:
             paths = self._current_work_paths_checked()
         except ValueError as e:
+            self._log_event("发送", f"发送前检查失败：{e}", level="ERROR")
             self._notify_error("发送失败", str(e))
             return
         if not self._confirm_dangerous_action(
@@ -6307,7 +6862,7 @@ class MainWindowFluent(FluentWindow):
             )
             self._btn_send_checkpoint.setEnabled(False)
             self._set_job_status("已完成", n_ok, n_tot)
-            self._log_append(f"已发送 {n_ok}/{n_tot} 行")
+            self._log_event("发送", f"已发送 {n_ok}/{n_tot} 行")
             InfoBar.success(
                 "发送完成",
                 f"{n_ok}/{n_tot} 行",
@@ -6315,17 +6870,15 @@ class MainWindowFluent(FluentWindow):
                 position=InfoBarPosition.TOP,
             )
         except GrblSendError as e:
-            self._log_append(f"[错误] {e}")
+            self._log_event("发送", str(e), level="ERROR")
             self._set_job_status("失败", e.acked_count or 0, e.total_count or 0)
             remaining = len(self._grbl.remaining_program_lines_from_checkpoint())
             self._btn_send_checkpoint.setEnabled(self._grbl.can_resume_from_checkpoint)
             if self._grbl.can_resume_from_checkpoint:
-                self._log_append(
-                    f"[断点] 已确认 {e.acked_count or 0} 行，剩余 {remaining} 行可续发"
-                )
+                self._log_event("发送", f"已确认 {e.acked_count or 0} 行，剩余 {remaining} 行可续发")
             InfoBar.error("GRBL 发送失败", str(e), parent=self, position=InfoBarPosition.TOP)
         except Exception as e:
-            self._log_append(f"[异常] {e}")
+            self._log_event("发送", f"发送异常：{e}", level="ERROR")
             InfoBar.error("发送失败", str(e), parent=self, position=InfoBarPosition.TOP)
 
     def _resume_from_checkpoint(self) -> None:

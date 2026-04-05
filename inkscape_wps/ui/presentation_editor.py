@@ -191,6 +191,19 @@ class WpsPresentationEditor(QWidget):
         """工程保存用：各页 HTML 或纯文本。"""
         return list(self._slides)
 
+    def slides_storage_for_export(self) -> List[str]:
+        """导出/字形检查用：将 HTML 页转为纯文本。"""
+        out: List[str] = []
+        doc = QTextDocument()
+        for stored in self._slides:
+            text = str(stored or "")
+            if text.lstrip().startswith("<"):
+                doc.setHtml(text)
+                out.append(doc.toPlainText())
+            else:
+                out.append(text)
+        return out
+
     def load_slides(self, slides: List[str]) -> None:
         """工程打开用。"""
         self._slides = list(slides) if slides else [""]

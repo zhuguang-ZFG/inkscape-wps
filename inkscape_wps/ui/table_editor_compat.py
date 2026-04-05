@@ -337,6 +337,7 @@ class WpsTableEditor(QWidget):
         self._table.clear()
         self._table.setRowCount(4)
         self._table.setColumnCount(4)
+        self._grid_gcode_mode.setCurrentIndex(0)
         self._emit_changed()
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
