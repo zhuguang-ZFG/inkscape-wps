@@ -165,7 +165,9 @@ def paths_to_gcode(
     travel_z()
     lines.extend(_gcode_extra_lines(cfg.gcode_program_suffix))
     lines.append("G0 X0.000 Y0.000")
-    lines.append("M5")
+    # 仅在 M3/M5 模式下发送 M5（Z 模式已在 travel_z() 中处理）
+    if use_m3m5:
+        lines.append("M5")
     if cfg.gcode_end_m30:
         lines.append("M30")
     else:

@@ -1,1 +1,1 @@
-"""Tests package for code review analyzer."""
+"""测试包"""

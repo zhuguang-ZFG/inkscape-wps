@@ -1,69 +1,59 @@
-"""Base class for all analyzers."""
+"""基础分析器类
+
+本模块定义了所有分析器的基类，提供了通用的分析框架和工具方法。
+
+分析器职责：
+- 遍历项目中的 Python 文件
+- 使用 AST 解析和分析代码
+- 识别特定类型的代码问题
+- 将问题添加到分析结果中
+
+所有具体的分析器（如 RuntimeCrashAnalyzer、DesignIssueAnalyzer 等）
+都应该继承自 BaseAnalyzer 并实现 analyze() 方法。
+"""
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional
+from typing import List
 
-from ..models import AnalysisResult
+from ..models import AnalysisResult, Issue
 
 
 class BaseAnalyzer(ABC):
-    """Base class for all code analyzers."""
-
-    def __init__(self, project_path: Path):
-        """Initialize the analyzer.
-
+    """所有分析器的基类"""
+    
+    def __init__(self, project_root: Path):
+        """初始化分析器
+        
         Args:
-            project_path: Path to the project root directory
+            project_root: 项目根目录路径
         """
-        self.project_path = Path(project_path)
-        self.result = AnalysisResult(analyzer_name=self.__class__.__name__)
-
+        self.project_root = Path(project_root)
+        self.result = AnalysisResult()
+    
     @abstractmethod
     def analyze(self) -> AnalysisResult:
-        """Run the analysis.
-
+        """执行分析
+        
         Returns:
-            AnalysisResult containing all issues found
+            分析结果
         """
         pass
-
-    def get_result(self) -> AnalysisResult:
-        """Get the analysis result.
-
-        Returns:
-            The AnalysisResult object
-        """
-        return self.result
-
-    def _get_file_path(self, relative_path: str) -> Optional[Path]:
-        """Get the full path to a file in the project.
-
+    
+    def add_issue(self, issue: Issue) -> None:
+        """添加问题到结果中"""
+        self.result.add_issue(issue)
+    
+    def get_python_files(self, directory: Path = None) -> List[Path]:
+        """获取目录下的所有 Python 文件
+        
         Args:
-            relative_path: Relative path from project root
-
+            directory: 目录路径，默认为项目根目录
+            
         Returns:
-            Full Path object if file exists, None otherwise
+            Python 文件路径列表
         """
-        full_path = self.project_path / relative_path
-        if full_path.exists():
-            return full_path
-        return None
-
-    def _read_file(self, relative_path: str) -> Optional[str]:
-        """Read a file from the project.
-
-        Args:
-            relative_path: Relative path from project root
-
-        Returns:
-            File content as string, or None if file doesn't exist
-        """
-        file_path = self._get_file_path(relative_path)
-        if file_path is None:
-            return None
-        try:
-            return file_path.read_text(encoding="utf-8")
-        except Exception as e:
-            self.result.add_error(f"Failed to read {relative_path}: {e}")
-            return None
+        if directory is None:
+            directory = self.project_root
+        
+        return list(directory.rglob("*.py"))

@@ -1,169 +1,201 @@
-# Code Review Analyzer
+# inkscape_wps 代码审查分析工具
 
-A comprehensive code analysis tool for the inkscape_wps project that identifies runtime crashes, design problems, code quality issues, and provides improvement suggestions.
+一个系统性的代码审查分析工具，用于识别 inkscape_wps 项目中的运行时崩溃问题、设计问题、代码质量问题等。
 
-## Project Structure
+## 功能
+
+- ✅ **运行时崩溃检测**：识别会导致程序崩溃的代码问题
+- ⏳ **脱节代码识别**：找出与实际运行路径无关的代码
+- ⏳ **设计问题检测**：识别架构和设计层面的问题
+- ⏳ **代码质量分析**：检查代码风格和质量问题
+- ⏳ **依赖关系分析**：验证项目依赖的正确性
+- ⏳ **结构化报告生成**：生成详细的分析报告
+
+## 快速开始
+
+### 安装
+
+```bash
+# 克隆项目
+git clone <repository>
+cd inkscape_wps
+
+# 安装依赖
+pip install pytest
+```
+
+### 使用
+
+```bash
+# 运行分析
+python -m code_review_analyzer
+
+# 运行测试
+pytest tests/ -v
+```
+
+## 项目结构
 
 ```
 code_review_analyzer/
-├── __init__.py              # Package initialization
-├── __main__.py              # CLI entry point
-├── models.py                # Data models (Issue, IssueSeverity, etc.)
-├── analyzers/
-│   ├── __init__.py
-│   ├── base_analyzer.py     # Base class for all analyzers
-│   ├── runtime_crash_analyzer.py      # P0: Runtime crash detection
-│   ├── orphaned_code_analyzer.py      # P1: Orphaned code detection
-│   ├── design_issue_analyzer.py       # P1: Design problem detection
-│   ├── code_quality_analyzer.py       # P2: Code quality issues
-│   ├── dependency_analyzer.py         # P2: Dependency analysis
-│   └── ast_utils.py                   # AST parsing utilities
-├── reporters/
-│   ├── __init__.py
-│   ├── base_reporter.py     # Base class for all reporters
-│   ├── report_generator.py  # P3: Report generation
-│   └── testing_strategy_generator.py  # P3: Testing strategy
-├── analyzer_coordinator.py  # Main analysis orchestrator
-├── cli.py                   # Command-line interface
-└── README.md                # This file
+├── models.py              # 数据模型定义
+├── analyzers/             # 分析器模块
+│   ├── base_analyzer.py   # 基础分析器类
+│   ├── ast_utils.py       # AST 解析工具
+│   └── runtime_crash_analyzer.py  # 运行时崩溃检测器
+└── reporters/             # 报告生成模块
+    └── base_reporter.py   # 基础报告生成器类
+
+tests/                      # 测试模块
+├── conftest.py            # pytest 配置
+├── test_ast_utils.py      # AST 工具测试
+└── test_runtime_crash_analyzer.py  # 分析器测试
 ```
 
-## Data Models
+## 核心概念
 
-### Issue
-Represents a single issue found during analysis with:
-- `id`: Unique identifier
-- `title`: Issue title
-- `description`: Detailed description
-- `severity`: IssueSeverity (CRITICAL, HIGH, MEDIUM, LOW)
-- `category`: IssueCategory (RUNTIME_CRASH, ORPHANED_CODE, DESIGN_PROBLEM, CODE_QUALITY, DEPENDENCY)
-- `location`: File path and line number
-- `impact`: Description of the impact
-- `suggestion`: Improvement suggestion
-- `details`: Additional details (optional)
-- `tags`: List of tags (optional)
+### 问题严重程度
 
-### IssueSeverity
-Enum with levels:
-- `CRITICAL`: Runtime crashes (P0)
-- `HIGH`: Design problems (P1)
-- `MEDIUM`: Code quality issues (P2)
-- `LOW`: Minor issues
+- **CRITICAL**：运行时必崩的问题
+- **HIGH**：设计层面的问题
+- **MEDIUM**：代码质量问题
+- **LOW**：建议改进
 
-### IssueCategory
-Enum with categories:
-- `RUNTIME_CRASH`: Runtime crash issues
-- `ORPHANED_CODE`: Orphaned/unused code
-- `DESIGN_PROBLEM`: Design and architecture issues
-- `CODE_QUALITY`: Code quality issues
-- `DEPENDENCY`: Dependency-related issues
+### 问题分类
 
-### AnalysisResult
-Result from a single analyzer containing:
-- `analyzer_name`: Name of the analyzer
-- `issues`: List of Issue objects
-- `errors`: List of error messages
-- `warnings`: List of warning messages
+- **RUNTIME_CRASH**：运行时崩溃
+- **DESIGN**：设计问题
+- **CODE_QUALITY**：代码质量
+- **DEPENDENCY**：依赖关系
+- **ORPHANED_CODE**：脱节代码
 
-### FullAnalysisResult
-Complete analysis result from all analyzers with:
-- `results`: List of AnalysisResult objects
-- `total_issues`: Total number of issues
-- `critical_issues`: Count of critical issues
-- `high_issues`: Count of high issues
-- `medium_issues`: Count of medium issues
-- `low_issues`: Count of low issues
+## API 示例
 
-## Base Classes
+### 基本使用
 
-### BaseAnalyzer
-Abstract base class for all analyzers. Provides:
-- `analyze()`: Abstract method to run analysis
-- `_get_file_path()`: Get full path to a project file
-- `_read_file()`: Read file content
-- `get_result()`: Get the analysis result
+```python
+from pathlib import Path
+from code_review_analyzer.analyzers.runtime_crash_analyzer import RuntimeCrashAnalyzer
 
-### BaseReporter
-Abstract base class for all reporters. Provides:
-- `generate()`: Abstract method to generate report
-- `save()`: Save report to file
+# 创建分析器
+analyzer = RuntimeCrashAnalyzer(Path.cwd())
 
-## Testing
+# 执行分析
+result = analyzer.analyze()
 
-Run tests with pytest:
+# 获取摘要
+summary = result.summary()
+print(f"发现 {summary['total_issues']} 个问题")
+print(f"  - 严重: {summary['critical']}")
+print(f"  - 高: {summary['high']}")
+print(f"  - 中: {summary['medium']}")
+print(f"  - 低: {summary['low']}")
+
+# 按严重程度获取问题
+from code_review_analyzer.models import IssueSeverity
+critical_issues = result.get_issues_by_severity(IssueSeverity.CRITICAL)
+for issue in critical_issues:
+    print(f"[{issue.severity.value}] {issue.title}")
+    print(f"  位置: {issue.file_path}:{issue.line_number}")
+    print(f"  建议: {issue.suggestion}")
+```
+
+### 使用 AST 工具
+
+```python
+from pathlib import Path
+from code_review_analyzer.analyzers.ast_utils import (
+    parse_python_file,
+    find_method_calls,
+    find_function_definitions,
+)
+
+# 解析 Python 文件
+tree = parse_python_file(Path("example.py"))
+
+# 查找方法调用
+calls = find_method_calls(tree, "get")
+for line_no, call_expr in calls:
+    print(f"Line {line_no}: {call_expr}")
+
+# 查找函数定义
+functions = find_function_definitions(tree)
+for func_name, start_line, end_line in functions:
+    size = end_line - start_line + 1
+    print(f"{func_name}: {size} 行")
+```
+
+## 开发指南
+
+### 添加新的分析器
+
+1. 创建新的分析器类，继承自 `BaseAnalyzer`
+2. 实现 `analyze()` 方法
+3. 使用 `add_issue()` 方法添加发现的问题
+4. 编写单元测试
+
+```python
+from code_review_analyzer.analyzers.base_analyzer import BaseAnalyzer
+from code_review_analyzer.models import Issue, IssueSeverity, IssueCategory
+
+class MyAnalyzer(BaseAnalyzer):
+    def analyze(self):
+        # 执行分析
+        issue = Issue(
+            id="my_001",
+            title="问题标题",
+            description="问题描述",
+            category=IssueCategory.CODE_QUALITY,
+            severity=IssueSeverity.MEDIUM,
+            file_path="path/to/file.py",
+            line_number=10,
+            suggestion="改进建议",
+        )
+        self.add_issue(issue)
+        return self.result
+```
+
+### 添加新的报告生成器
+
+1. 创建新的报告生成器类，继承自 `BaseReporter`
+2. 实现 `generate()` 方法
+3. 返回格式化的报告内容
+
+```python
+from code_review_analyzer.reporters.base_reporter import BaseReporter
+
+class MyReporter(BaseReporter):
+    def generate(self) -> str:
+        # 生成报告
+        report = "# 代码审查报告\n\n"
+        for issue in self.result.issues:
+            report += f"## {issue.title}\n"
+            report += f"- 位置: {issue.file_path}:{issue.line_number}\n"
+            report += f"- 建议: {issue.suggestion}\n\n"
+        return report
+```
+
+## 测试
 
 ```bash
-# Run all tests
-python3 -m pytest tests/ -v
+# 运行所有测试
+pytest tests/ -v
 
-# Run specific test file
-python3 -m pytest tests/test_models.py -v
+# 运行特定测试文件
+pytest tests/test_ast_utils.py -v
 
-# Run with coverage
-python3 -m pytest tests/ --cov=code_review_analyzer
+# 运行特定测试
+pytest tests/test_ast_utils.py::test_parse_python_file -v
+
+# 显示覆盖率
+pytest tests/ --cov=code_review_analyzer
 ```
 
-## Implementation Phases
+## 许可证
 
-### P0: Runtime Crash Detection (Priority 0)
-- Task 1: Project structure and framework (✓ COMPLETED)
-- Task 2: Runtime crash analyzer
-- Task 3: AST parsing utilities
-- Task 4: P0 checkpoint
+MIT
 
-### P1: Orphaned Code & Design Issues (Priority 1)
-- Task 5: Orphaned code analyzer
-- Task 6: Design issue analyzer
-- Task 7: P1 checkpoint
+## 贡献
 
-### P2: Code Quality & Dependencies (Priority 2)
-- Task 8: Code quality analyzer
-- Task 9: Dependency analyzer
-- Task 10: P2 checkpoint
+欢迎提交 Issue 和 Pull Request！
 
-### P3: Reports & Testing Strategy (Priority 3)
-- Task 11: Report generator
-- Task 12: Testing strategy generator
-- Task 13: Analyzer coordinator
-- Task 14: CLI interface
-- Task 15: P3 checkpoint
-
-### Integration & Validation
-- Task 16: End-to-end integration tests
-- Task 17: Documentation and examples
-- Task 18: Final checkpoint
-
-## Usage
-
-```bash
-# Run analysis on a project
-python3 -m code_review_analyzer --project-path /path/to/project --output report.md
-
-# Run with specific priority filter
-python3 -m code_review_analyzer --project-path /path/to/project --priority critical
-
-# Generate HTML report
-python3 -m code_review_analyzer --project-path /path/to/project --format html
-```
-
-## Development
-
-Install development dependencies:
-
-```bash
-pip install -e ".[dev]"
-```
-
-Format code:
-
-```bash
-black code_review_analyzer tests
-isort code_review_analyzer tests
-```
-
-Run linting:
-
-```bash
-flake8 code_review_analyzer tests
-mypy code_review_analyzer
-```

@@ -1,15 +1,7 @@
-"""Main entry point for the code review analyzer."""
+"""命令行入口"""
 
 import sys
-from pathlib import Path
-
-
-def main():
-    """Main entry point."""
-    print("Code Review Analyzer v0.1.0")
-    print("Use 'python -m code_review_analyzer' to run the analyzer")
-    return 0
-
+from .cli import main
 
 if __name__ == "__main__":
     sys.exit(main())

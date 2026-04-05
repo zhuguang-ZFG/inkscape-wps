@@ -1,39 +1,26 @@
-"""Base class for all reporters."""
+"""基础报告生成器类"""
 
 from abc import ABC, abstractmethod
-from pathlib import Path
 
-from ..models import FullAnalysisResult
+from ..models import AnalysisResult
 
 
 class BaseReporter(ABC):
-    """Base class for all report generators."""
-
-    def __init__(self, output_path: Path):
-        """Initialize the reporter.
-
+    """所有报告生成器的基类"""
+    
+    def __init__(self, result: AnalysisResult):
+        """初始化报告生成器
+        
         Args:
-            output_path: Path where the report will be saved
+            result: 分析结果
         """
-        self.output_path = Path(output_path)
-
+        self.result = result
+    
     @abstractmethod
-    def generate(self, analysis_result: FullAnalysisResult) -> str:
-        """Generate a report from analysis results.
-
-        Args:
-            analysis_result: The complete analysis result
-
+    def generate(self) -> str:
+        """生成报告
+        
         Returns:
-            Report content as string
+            报告内容
         """
         pass
-
-    def save(self, content: str) -> None:
-        """Save the report to file.
-
-        Args:
-            content: Report content to save
-        """
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
-        self.output_path.write_text(content, encoding="utf-8")

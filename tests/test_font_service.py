@@ -37,3 +37,31 @@ def test_get_character_paths_returns_scaled_vector_paths() -> None:
         assert [(p.x, p.y) for p in paths[0].points] == [(0.0, 0.0), (4.0, 6.0)]
 
     asyncio.run(run())
+
+
+def test_parse_custom_json_font_stroke_counts() -> None:
+    service = FontService(font_directories=[])
+    mock_font_data = {
+        "metadata": {"name": "test_font"},
+        "characters": {
+            "A": {
+                "strokes": [
+                    [[0, 0], [5, 10], [10, 0]],
+                    [[2, 6], [8, 6]],
+                ],
+                "width": 10,
+                "height": 10,
+            },
+            "B": {
+                "strokes": [
+                    [[0, 0]],
+                    [[0, 0], [0, 10]],
+                ],
+                "width": 10,
+                "height": 10,
+            },
+        },
+    }
+    parsed = service._parse_custom_json_font(mock_font_data)
+    assert len(parsed["characters"]["A"]["strokes"]) == 2
+    assert len(parsed["characters"]["B"]["strokes"]) == 1

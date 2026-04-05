@@ -26,6 +26,7 @@ from inkscape_wps.core.config import MachineConfig
 from inkscape_wps.ui.document_bridge import (
     LayoutLine,
     apply_default_tab_stops,
+    document_plain_text_skip_strike,
     text_edit_to_layout_lines,
 )
 
@@ -38,7 +39,7 @@ def _slide_plain_preview(stored: str, max_len: int = 18) -> str:
     if s.startswith("<"):
         doc = QTextDocument()
         doc.setHtml(stored)
-        t = doc.toPlainText().strip().replace("\n", " ")
+        t = document_plain_text_skip_strike(doc).strip().replace("\n", " ")
     else:
         t = stored.strip().replace("\n", " ")
     if len(t) <= max_len:

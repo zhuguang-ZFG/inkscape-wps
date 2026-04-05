@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import List, Tuple, Union
 
-from PyQt6.QtGui import QFont, QFontMetricsF, QTextCursor, QTextDocument
+from PyQt6.QtGui import QFont, QFontMetricsF, QTextCharFormat, QTextDocument
 from PyQt6.QtWidgets import QTextEdit
 
 from inkscape_wps.core.config import MachineConfig
@@ -27,6 +27,61 @@ def _font_layout_key(font: QFont) -> tuple:
     if ps <= 0:
         ps = 12.0
     return (font.family(), round(ps, 3), int(font.weight()), bool(font.italic()))
+
+
+def _line_cursor_to_x(line, rel: int) -> float:
+    """兼容部分绑定中 `QTextLine.cursorToX` 返回 `(x, trailing)` 元组的情况。"""
+    v = line.cursorToX(rel)
+    if isinstance(v, (tuple, list)):
+        return float(v[0])
+    return float(v)
+
+
+def _char_format_at_doc_pos(doc: QTextDocument, pos: int) -> QTextCharFormat:
+    """取某索引处字符的格式。
+
+    注意：`QTextCursor.charFormat()` 在无选区时表示「将要输入」的格式，
+    不能用于判断已有字符是否删除线。
+    """
+    ch = doc.characterAt(pos)
+    if ch == "\u0000":
+        return QTextCharFormat()
+    block = doc.findBlock(pos)
+    if not block.isValid():
+        return QTextCharFormat()
+    it = block.begin()
+    while it != block.end():
+        frag = it.fragment()
+        if frag.isValid():
+            start = frag.position()
+            end = start + frag.length()
+            if start <= pos < end:
+                return frag.charFormat()
+        it += 1
+    return QTextCharFormat()
+
+
+def _char_run_layout_key(doc: QTextDocument, pos: int) -> tuple:
+    """Run 分组键：字体 + 删除线（修订「删除」痕迹不进入 LayoutLine / G-code）。"""
+    cf = _char_format_at_doc_pos(doc, pos)
+    return (_font_layout_key(cf.font()), bool(cf.fontStrikeOut()))
+
+
+def document_plain_text_skip_strike(doc: QTextDocument) -> str:
+    """与 `text_edit_to_layout_lines` 一致：块间换行，省略带删除线的片段（用于导出纯文本等）。"""
+    lines: List[str] = []
+    block = doc.firstBlock()
+    while block.isValid():
+        pieces: List[str] = []
+        it = block.begin()
+        while it != block.end():
+            frag = it.fragment()
+            if frag.isValid() and not frag.charFormat().fontStrikeOut():
+                pieces.append(frag.text())
+            it += 1
+        lines.append("".join(pieces))
+        block = block.next()
+    return "\n".join(lines)
 
 
 def apply_default_tab_stops(editor: QTextEdit, *, n_spaces: float = 4.0) -> None:
@@ -77,20 +132,21 @@ def text_edit_to_layout_lines(
             baseline_doc_y = line_y_top + line.ascent()
             baseline_up_mm = cfg.page_height_mm - baseline_doc_y * mm_px_y
             line_start = block.position() + line.textStart()
-            cur = QTextCursor(doc)
             j = 0
             while j < tlen:
                 pos0 = line_start + j
-                cur.setPosition(pos0)
-                tf0 = cur.charFormat().font()
-                key0 = _font_layout_key(tf0)
+                key0 = _char_run_layout_key(doc, pos0)
                 j_end = j + 1
                 while j_end < tlen:
-                    cur.setPosition(line_start + j_end)
-                    if _font_layout_key(cur.charFormat().font()) != key0:
+                    if _char_run_layout_key(doc, line_start + j_end) != key0:
                         break
                     j_end += 1
 
+                if key0[1]:
+                    j = j_end
+                    continue
+
+                tf0 = _char_format_at_doc_pos(doc, pos0).font()
                 pt = float(tf0.pointSizeF() if tf0.pointSizeF() > 0 else tf0.pointSize() or 12)
                 if pt <= 0:
                     pt = 12.0
@@ -98,7 +154,7 @@ def text_edit_to_layout_lines(
                 ref_ascent_pt = pt * (fm.ascent() / max(fm.height(), 1e-6))
 
                 rel0 = j
-                x0 = line_x + line.cursorToX(rel0)
+                x0 = line_x + _line_cursor_to_x(line, rel0)
                 ox_mm = m + x0 * mm_px_x
 
                 chars: List[str] = []
@@ -109,7 +165,7 @@ def text_edit_to_layout_lines(
                     if ch == "\u0000":
                         break
                     chars.append(ch)
-                    w = line.cursorToX(k + 1) - line.cursorToX(k)
+                    w = _line_cursor_to_x(line, k + 1) - _line_cursor_to_x(line, k)
                     advs.append(w * mm_px_x)
                 text = "".join(chars).replace("\u2029", "")
 
@@ -182,20 +238,21 @@ def html_fragment_to_layout_lines(
                 float(cell_top_from_page_top_mm) + baseline_from_cell_top_mm
             )
             line_start = block.position() + line.textStart()
-            cur = QTextCursor(doc)
             j = 0
             while j < tlen:
                 pos0 = line_start + j
-                cur.setPosition(pos0)
-                tf0 = cur.charFormat().font()
-                key0 = _font_layout_key(tf0)
+                key0 = _char_run_layout_key(doc, pos0)
                 j_end = j + 1
                 while j_end < tlen:
-                    cur.setPosition(line_start + j_end)
-                    if _font_layout_key(cur.charFormat().font()) != key0:
+                    if _char_run_layout_key(doc, line_start + j_end) != key0:
                         break
                     j_end += 1
 
+                if key0[1]:
+                    j = j_end
+                    continue
+
+                tf0 = _char_format_at_doc_pos(doc, pos0).font()
                 pt = float(
                     tf0.pointSizeF()
                     if tf0.pointSizeF() > 0
@@ -207,7 +264,7 @@ def html_fragment_to_layout_lines(
                 ref_ascent_pt = pt * (fm.ascent() / max(fm.height(), 1e-6))
 
                 rel0 = j
-                x0 = line_x + line.cursorToX(rel0)
+                x0 = line_x + _line_cursor_to_x(line, rel0)
                 ox_mm = float(cell_left_mm) + x0 * mm_per_px_x
 
                 chars: List[str] = []
@@ -218,7 +275,7 @@ def html_fragment_to_layout_lines(
                     if ch == "\u0000":
                         break
                     chars.append(ch)
-                    w = line.cursorToX(k + 1) - line.cursorToX(k)
+                    w = _line_cursor_to_x(line, k + 1) - _line_cursor_to_x(line, k)
                     advs.append(w * mm_per_px_x)
                 text = "".join(chars).replace("\u2029", "")
 

@@ -1,4 +1,4 @@
-"""Reporters package for generating analysis reports."""
+"""报告生成模块"""
 
 from .base_reporter import BaseReporter
 
