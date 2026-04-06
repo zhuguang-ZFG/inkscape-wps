@@ -7,6 +7,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -59,6 +60,24 @@ def _optional_tool_result(name: str, *, strict_tools: bool) -> StepResult:
     return StepResult(name=name, status="skipped", detail=detail)
 
 
+_PYTEST_PATTERN = re.compile(r"^\s*(import pytest|from pytest import|@pytest\.)", re.MULTILINE)
+
+
+def _pytest_style_test_files(root: Path) -> list[Path]:
+    tests_dir = root / "tests"
+    if not tests_dir.is_dir():
+        return []
+    matches: list[Path] = []
+    for path in sorted(tests_dir.rglob("test_*.py")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if _PYTEST_PATTERN.search(text):
+            matches.append(path)
+    return matches
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run compile, test, and optional static checks.")
     parser.add_argument(
@@ -93,13 +112,26 @@ def main() -> int:
             )
         )
     else:
-        print("[verify] unittest")
-        results.append(
-            _run(
-                _python_module_cmd("unittest", "discover", "-s", "tests", "-p", "test_*.py"),
-                name="unittest",
+        pytest_style = _pytest_style_test_files(ROOT)
+        if pytest_style:
+            sample = ", ".join(path.name for path in pytest_style[:3])
+            if len(pytest_style) > 3:
+                sample += f" 等 {len(pytest_style)} 个文件"
+            results.append(
+                StepResult(
+                    name="pytest",
+                    status="failed",
+                    detail=f"pytest 未安装，且存在 pytest 风格测试：{sample}",
+                )
             )
-        )
+        else:
+            print("[verify] unittest")
+            results.append(
+                _run(
+                    _python_module_cmd("unittest", "discover", "-s", "tests", "-p", "test_*.py"),
+                    name="unittest",
+                )
+            )
 
     ruff = shutil.which("ruff")
     if ruff:

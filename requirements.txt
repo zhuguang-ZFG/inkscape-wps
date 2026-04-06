@@ -1,3 +1,4 @@
+# 推荐的本地全量依赖：主界面 + 经典 PyQt6 回退 + Office 导入/导出
 PyQt5>=5.15.9
 PyQt6>=6.4.0
 PyQt-Fluent-Widgets>=1.11.0

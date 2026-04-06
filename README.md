@@ -23,22 +23,47 @@ python3 -m inkscape_wps
 
 - **Python 3.10+**（3.10 需额外 **tomli** 读 TOML，3.11+ 用标准库 `tomllib`）
 - **PyQt5 + qfluentwidgets（PyQt-Fluent-Widgets）**（当前主界面，类 WPS 风格菜单与导航）
-- **PyQt6**（保留旧版界面作为回退/对照）
+- **PyQt6**（可选：经典界面回退/对照）
 - **pyserial**（串口通信）
 - **tomli-w**（写 TOML）
 - **Pillow**（位图导入等）
-- （可选）**Office/WPS 文件导入**：`.docx/.xlsx/.pptx` 需要 `python-docx` / `openpyxl` / `python-pptx`；`.wps/.et/.dps` 可用 LibreOffice（`soffice`）自动转换后导入
+- （可选）**Office/WPS 文件导入/导出**：`.docx/.xlsx/.pptx` 需要 `python-docx` / `openpyxl` / `python-pptx`；`.wps/.et/.dps` 可用 LibreOffice（`soffice`）自动转换后导入
 
 **安装依赖**：
 
 ```bash
+# 推荐的本地全量环境（主界面 + PyQt6 回退 + Office）
 pip install -r requirements.txt
+```
+
+如果只安装最小运行依赖：
+
+```bash
+pip install -e .
+```
+
+如果需要经典 PyQt6 回退界面：
+
+```bash
+pip install -e ".[classic-ui]"
+```
+
+如果需要 Office/WPS 导入导出：
+
+```bash
+pip install -e ".[office]"
+```
+
+如果两者都需要：
+
+```bash
+pip install -e ".[classic-ui,office]"
 ```
 
 开发验证建议安装：
 
 ```bash
-pip install -r requirements-dev.txt
+pip install -e ".[dev,classic-ui,office]"
 ```
 
 或直接使用项目命令：
@@ -66,7 +91,9 @@ python3 tools/verify.py
 默认会统一执行：
 
 - `compileall`
-- 已安装 `pytest` 时执行 `pytest -q`，否则回退到 `unittest discover`
+- 已安装 `pytest` 时执行 `pytest -q`
+- 若未安装 `pytest` 且测试目录存在 pytest 风格测试，则直接失败，避免误把“部分测试未执行”当成通过
+- 只有在测试目录完全兼容 `unittest` 时，才回退到 `unittest discover`
 - 已安装时自动执行 `ruff check`
 - 已安装时自动执行 `mypy`
 
@@ -95,6 +122,12 @@ pip install -e .
 ```
 
 时会自动安装运行所需依赖。
+
+如果你还需要经典 PyQt6 回退界面或 Office/WPS 导入导出，请额外安装：
+
+```bash
+pip install -e ".[classic-ui,office]"
+```
 
 如果后续需要生成可直接分发的桌面包，而不是要求目标机器再单独安装 Python 依赖，可使用：
 

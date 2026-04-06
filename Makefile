@@ -3,10 +3,10 @@ PYTHON ?= python3
 .PHONY: install install-dev verify verify-strict test test-unittest lint typecheck bundle ci
 
 install:
-	$(PYTHON) -m pip install -e .
+	$(PYTHON) -m pip install -e ".[classic-ui,office]"
 
 install-dev:
-	$(PYTHON) -m pip install -r requirements-dev.txt
+	$(PYTHON) -m pip install -e ".[dev,classic-ui,office]"
 
 verify:
 	$(PYTHON) tools/verify.py --report-json logs/verify-report.json
