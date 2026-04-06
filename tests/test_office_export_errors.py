@@ -7,7 +7,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from inkscape_wps.core.office_export import DocParagraph, DocRun, OfficeExportError, export_docx, export_pptx, export_xlsx
+from inkscape_wps.core.office_export import (
+    DocParagraph,
+    DocRun,
+    OfficeExportError,
+    export_docx,
+    export_pptx,
+    export_xlsx,
+)
 
 
 class TestOfficeExportErrors(unittest.TestCase):
@@ -24,11 +31,17 @@ class TestOfficeExportErrors(unittest.TestCase):
 
         self.assertIn("DOCX 写入失败", str(ctx.exception))
 
-    @unittest.skipUnless(__import__("importlib").util.find_spec("openpyxl") is not None, "openpyxl 未安装")
+    @unittest.skipUnless(
+        __import__("importlib").util.find_spec("openpyxl") is not None,
+        "openpyxl 未安装",
+    )
     def test_export_xlsx_wraps_oserror_as_office_export_error(self) -> None:
         with tempfile.TemporaryDirectory(prefix="inkscape-wps-xlsx-") as td:
             out = Path(td) / "out.xlsx"
-            with mock.patch("openpyxl.workbook.workbook.Workbook.save", side_effect=OSError("disk full")):
+            with mock.patch(
+                "openpyxl.workbook.workbook.Workbook.save",
+                side_effect=OSError("disk full"),
+            ):
                 with self.assertRaises(OfficeExportError) as ctx:
                     export_xlsx(
                         out,

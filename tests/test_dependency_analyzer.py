@@ -1,9 +1,9 @@
 """依赖关系分析器的单元测试"""
 
+
 import pytest
-from pathlib import Path
+
 from code_review_analyzer.analyzers.dependency_analyzer import DependencyAnalyzer
-from code_review_analyzer.models import IssueCategory
 
 
 @pytest.fixture

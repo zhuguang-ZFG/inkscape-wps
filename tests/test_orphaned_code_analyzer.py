@@ -1,7 +1,8 @@
 """脱节代码检测器的单元测试"""
 
+
 import pytest
-from pathlib import Path
+
 from code_review_analyzer.analyzers.orphaned_code_analyzer import OrphanedCodeAnalyzer
 from code_review_analyzer.models import IssueCategory
 
@@ -69,3 +70,38 @@ def test_full_analysis(analyzer):
     # 获取摘要
     summary = result.summary()
     assert "total_issues" in summary
+
+
+def test_imported_service_is_not_marked_orphaned(temp_project_dir):
+    """Imported service classes should count as used."""
+    services_dir = temp_project_dir / "inkscape_wps" / "core" / "services"
+    (services_dir / "font_service.py").write_text(
+        "class FontService:\n    pass\n",
+        encoding="utf-8",
+    )
+    (services_dir / "gcode_service.py").write_text(
+        "class GCodeService:\n    pass\n",
+        encoding="utf-8",
+    )
+    (services_dir / "serial_service.py").write_text(
+        "class SerialService:\n    pass\n",
+        encoding="utf-8",
+    )
+    (services_dir / "preview_service.py").write_text(
+        "class PreviewService:\n    pass\n",
+        encoding="utf-8",
+    )
+    user_file = temp_project_dir / "inkscape_wps" / "ui" / "consumer.py"
+    user_file.write_text(
+        "from inkscape_wps.core.services.font_service import FontService\n\n"
+        "class Consumer:\n"
+        "    def __init__(self, service: FontService):\n"
+        "        self.service = service\n",
+        encoding="utf-8",
+    )
+
+    analyzer = OrphanedCodeAnalyzer(temp_project_dir)
+    result = analyzer.analyze()
+
+    titles = [issue.title for issue in result.issues]
+    assert "脱节代码：FontService 未被使用" not in titles

@@ -148,7 +148,7 @@ def main():
     
     # 保存报告
     if args.output:
-        coordinator.save_report(args.output)
+        coordinator.save_report(args.output, report_format=args.format)
     
     # 显示性能统计
     if not args.no_monitor or not args.no_cache:

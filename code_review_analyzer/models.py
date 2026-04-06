@@ -49,7 +49,19 @@ class Issue:
     
     # 相关信息
     related_issues: List[str] = field(default_factory=list)  # 相关问题 ID
-    
+
+    @property
+    def location(self) -> str:
+        """兼容旧接口的位置描述。"""
+        if self.line_number is None:
+            return self.file_path
+        return f"{self.file_path}:{self.line_number}"
+
+    @property
+    def impact(self) -> str:
+        """兼容旧接口的影响描述。"""
+        return self.error_type or self.severity.value
+
     def __str__(self) -> str:
         """字符串表示"""
         location = f"{self.file_path}"
@@ -78,8 +90,11 @@ class Issue:
 @dataclass
 class AnalysisResult:
     """分析结果"""
-    
+
+    analyzer_name: str = ""  # 生成该结果的分析器名称
     issues: List[Issue] = field(default_factory=list)  # 发现的问题列表
+    errors: List[str] = field(default_factory=list)  # 分析期间的错误
+    warnings: List[str] = field(default_factory=list)  # 分析期间的警告
     total_files_analyzed: int = 0  # 分析的文件总数
     analysis_duration_seconds: float = 0.0  # 分析耗时（秒）
     
@@ -98,7 +113,10 @@ class AnalysisResult:
     def summary(self) -> dict:
         """生成摘要"""
         return {
+            "analyzer_name": self.analyzer_name,
             "total_issues": len(self.issues),
+            "total_errors": len(self.errors),
+            "total_warnings": len(self.warnings),
             "critical": len(self.get_issues_by_severity(IssueSeverity.CRITICAL)),
             "high": len(self.get_issues_by_severity(IssueSeverity.HIGH)),
             "medium": len(self.get_issues_by_severity(IssueSeverity.MEDIUM)),

@@ -1065,7 +1065,8 @@ class MainWindow(QMainWindow):
         elif idx == 1:
             r, c = self._table_editor.row_column_count()
             extra = self._glyph_status_hint("table")
-            self._st_cursor.setText(f"表格  │  {r} 行 × {c} 列" + (f"  │  {extra}" if extra else ""))
+            cursor_text = f"表格  │  {r} 行 × {c} 列"
+            self._st_cursor.setText(cursor_text + (f"  │  {extra}" if extra else ""))
         else:
             extra = self._glyph_status_hint("slides")
             self._st_cursor.setText(
@@ -1101,7 +1102,8 @@ class MainWindow(QMainWindow):
             row = int(idx.row())
             col = int(idx.column())
             in_selection = any(
-                rng.topRow() <= row <= rng.bottomRow() and rng.leftColumn() <= col <= rng.rightColumn()
+                rng.topRow() <= row <= rng.bottomRow()
+                and rng.leftColumn() <= col <= rng.rightColumn()
                 for rng in tw.selectedRanges()
             )
             if not in_selection:
@@ -2265,7 +2267,10 @@ class MainWindow(QMainWindow):
         g = paths_to_gcode(paths, self._cfg, order=False)
         dlg = QMessageBox(self)
         dlg.setWindowTitle("G-code")
-        dlg.setText(self._build_job_summary(paths) + "\n\n当前程序（可复制）；亦可「导出 G-code 到文件」。")
+        dlg.setText(
+            self._build_job_summary(paths)
+            + "\n\n当前程序（可复制）；亦可「导出 G-code 到文件」。"
+        )
         dlg.setDetailedText(g)
         dlg.exec()
 
@@ -2290,10 +2295,8 @@ class MainWindow(QMainWindow):
         except OSError as e:
             QMessageBox.warning(self, "导出 G-code", str(e))
             return
-        self.statusBar().showMessage(
-            f"已导出 {Path(path).name}  │  {self._build_job_summary(paths).replace(chr(10), '  │  ')}",
-            5000,
-        )
+        summary = self._build_job_summary(paths).replace(chr(10), "  │  ")
+        self.statusBar().showMessage(f"已导出 {Path(path).name}  │  {summary}", 5000)
 
     def _log_append(self, s: str) -> None:
         self._log.appendPlainText(s)
@@ -2460,10 +2463,8 @@ class MainWindow(QMainWindow):
             self._resume_checkpoint_btn.setEnabled(False)
             self._set_job_status("已完成", n_ok, n_tot)
             self._log_append(f"已发送 {n_ok}/{n_tot} 行")
-            self.statusBar().showMessage(
-                f"G-code 已发送 {n_ok} 行  │  {self._build_job_summary(paths).replace(chr(10), '  │  ')}",
-                5000,
-            )
+            summary = self._build_job_summary(paths).replace(chr(10), "  │  ")
+            self.statusBar().showMessage(f"G-code 已发送 {n_ok} 行  │  {summary}", 5000)
         except GrblSendError as e:
             self._set_job_status("失败", e.acked_count or 0, e.total_count or 0)
             QMessageBox.warning(self, "GRBL 发送失败", str(e))

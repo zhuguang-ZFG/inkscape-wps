@@ -3,6 +3,6 @@
 __version__ = "0.1.0"
 __author__ = "Code Review Analyzer"
 
-from .models import Issue, IssueSeverity, IssueCategory
+from .models import Issue, IssueCategory, IssueSeverity
 
 __all__ = ["Issue", "IssueSeverity", "IssueCategory"]

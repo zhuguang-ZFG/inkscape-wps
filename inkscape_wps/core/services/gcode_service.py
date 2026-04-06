@@ -26,14 +26,7 @@ class GCodeService:
                 paths = self.optimize_paths(paths)
 
             # 生成G-code
-            gcode = paths_to_gcode(
-                paths=paths,
-                cfg=self.config,
-                program_prefix=self.config.gcode_program_prefix,
-                program_suffix=self.config.gcode_program_suffix,
-                g92_origin=self.config.gcode_g92_origin,
-                add_m30=self.config.gcode_add_m30
-            )
+            gcode = paths_to_gcode(paths=paths, cfg=self.config)
 
             self._logger.info(f"生成G-code完成，共 {len(paths)} 条路径")
             return gcode

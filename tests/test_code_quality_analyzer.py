@@ -1,9 +1,10 @@
 """代码质量检测器的单元测试"""
 
+
 import pytest
-from pathlib import Path
+
 from code_review_analyzer.analyzers.code_quality_analyzer import CodeQualityAnalyzer
-from code_review_analyzer.models import IssueCategory, IssueSeverity
+from code_review_analyzer.models import IssueSeverity
 
 
 @pytest.fixture
@@ -103,3 +104,75 @@ def test_issue_severity_levels(analyzer):
     
     for issue in low_issues:
         assert issue.severity == IssueSeverity.LOW
+
+
+def test_public_framework_hook_is_not_reported_as_unused_method(temp_project_dir):
+    """Public framework callbacks should not be treated as unused methods."""
+    ui_file = temp_project_dir / "inkscape_wps" / "ui" / "window.py"
+    ui_file.write_text(
+        "class MainWindow:\n"
+        "    def closeEvent(self, event):\n"
+        "        event.accept()\n",
+        encoding="utf-8",
+    )
+
+    analyzer = CodeQualityAnalyzer(temp_project_dir)
+    analyzer.check_unused_methods()
+
+    titles = [issue.title for issue in analyzer.result.issues]
+    assert "未使用的方法" not in titles
+
+
+def test_unused_private_helper_is_reported(temp_project_dir):
+    """Unused private helpers should still be reported."""
+    ui_file = temp_project_dir / "inkscape_wps" / "ui" / "helper.py"
+    ui_file.write_text(
+        "class Helper:\n"
+        "    def _never_called(self):\n"
+        "        return 1\n",
+        encoding="utf-8",
+    )
+
+    analyzer = CodeQualityAnalyzer(temp_project_dir)
+    analyzer.check_unused_methods()
+
+    issues = [issue for issue in analyzer.result.issues if issue.title == "未使用的方法"]
+    assert len(issues) == 1
+    assert issues[0].line_number == 2
+
+
+def test_debug_logging_fstring_is_reported(temp_project_dir):
+    """Debug logging with f-strings should be reported."""
+    core_file = temp_project_dir / "inkscape_wps" / "core" / "logging_case.py"
+    core_file.write_text(
+        "import logging\n"
+        "logger = logging.getLogger(__name__)\n"
+        "def run(value):\n"
+        "    logger.debug(f'value={value}')\n",
+        encoding="utf-8",
+    )
+
+    analyzer = CodeQualityAnalyzer(temp_project_dir)
+    analyzer.check_logging_fstring()
+
+    issues = [issue for issue in analyzer.result.issues if issue.title == "日志调用中使用 f-string"]
+    assert len(issues) == 1
+    assert issues[0].line_number == 4
+
+
+def test_error_logging_fstring_is_not_reported(temp_project_dir):
+    """Error logging is currently excluded to avoid noisy low-value findings."""
+    core_file = temp_project_dir / "inkscape_wps" / "core" / "logging_case.py"
+    core_file.write_text(
+        "import logging\n"
+        "logger = logging.getLogger(__name__)\n"
+        "def run(value):\n"
+        "    logger.error(f'value={value}')\n",
+        encoding="utf-8",
+    )
+
+    analyzer = CodeQualityAnalyzer(temp_project_dir)
+    analyzer.check_logging_fstring()
+
+    issues = [issue for issue in analyzer.result.issues if issue.title == "日志调用中使用 f-string"]
+    assert issues == []

@@ -10,10 +10,8 @@ import os
 import shutil
 import subprocess
 import sys
-from dataclasses import asdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -109,7 +107,12 @@ def main() -> int:
         results.append(_run([ruff, "check", "inkscape_wps", "tests"], name="ruff"))
     elif _module_available("ruff"):
         print("[verify] ruff")
-        results.append(_run(_python_module_cmd("ruff", "check", "inkscape_wps", "tests"), name="ruff"))
+        results.append(
+            _run(
+                _python_module_cmd("ruff", "check", "inkscape_wps", "tests"),
+                name="ruff",
+            )
+        )
     else:
         results.append(_optional_tool_result("ruff", strict_tools=args.strict_tools))
 
@@ -139,7 +142,8 @@ def main() -> int:
             "failed": bool(failed),
             "results": [asdict(result) for result in results],
         }
-        report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        report = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        report_path.write_text(report, encoding="utf-8")
 
     return 1 if failed else 0
 

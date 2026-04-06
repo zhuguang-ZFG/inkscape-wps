@@ -31,6 +31,7 @@ from PyQt5.QtWidgets import (
 )
 
 from inkscape_wps.core.config import MachineConfig
+from inkscape_wps.core.types import Point, VectorPath
 from inkscape_wps.ui.document_bridge_pyqt5 import (
     LayoutLine,
     apply_default_tab_stops,
@@ -38,7 +39,6 @@ from inkscape_wps.ui.document_bridge_pyqt5 import (
     text_edit_to_layout_lines,
     text_edit_to_outline_paths,
 )
-from inkscape_wps.core.types import Point, VectorPath
 
 
 def _slide_plain_preview(stored: str, max_len: int = 18) -> str:

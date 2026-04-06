@@ -1,9 +1,8 @@
 """报告生成器 - 生成结构化的代码审查报告"""
 
 from pathlib import Path
-from typing import Dict, List
 
-from ..models import AnalysisResult, IssueSeverity, IssueCategory
+from ..models import AnalysisResult, IssueCategory, IssueSeverity
 
 
 class ReportGenerator:
@@ -72,7 +71,12 @@ class ReportGenerator:
         """按严重程度生成问题列表"""
         report = "## 按严重程度分类\n\n"
         
-        for severity in [IssueSeverity.CRITICAL, IssueSeverity.HIGH, IssueSeverity.MEDIUM, IssueSeverity.LOW]:
+        for severity in (
+            IssueSeverity.CRITICAL,
+            IssueSeverity.HIGH,
+            IssueSeverity.MEDIUM,
+            IssueSeverity.LOW,
+        ):
             issues = self.result.get_issues_by_severity(severity)
             
             if not issues:

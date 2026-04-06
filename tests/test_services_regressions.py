@@ -53,3 +53,13 @@ def test_gcode_service_optimize_paths_reads_config_via_attributes() -> None:
     optimized = service.optimize_paths(paths)
     assert len(optimized) == 1
     assert [(p.x, p.y) for p in optimized[0].points] == [(0, 0), (3, 4)]
+
+
+def test_gcode_service_generate_from_paths_uses_current_machine_config_fields() -> None:
+    service = GCodeService(MachineConfig())
+    paths = [VectorPath((Point(0, 0), Point(1, 1)))]
+
+    gcode = service.generate_from_paths(paths, optimize=False)
+
+    assert "G21" in gcode
+    assert "M2" in gcode

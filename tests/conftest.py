@@ -1,8 +1,10 @@
 """Pytest 配置和共享 fixtures"""
 
-import pytest
 import tempfile
 from pathlib import Path
+
+import pytest
+
 from code_review_analyzer.cache_manager import CacheManager
 from code_review_analyzer.performance_monitor import PerformanceMonitor
 
@@ -59,6 +61,19 @@ class SampleClass:
     
     filepath.write_text(code)
     return filepath
+
+
+@pytest.fixture
+def sample_project_structure(temp_project_dir):
+    """创建带有基础源码文件的示例项目结构。"""
+    types_file = temp_project_dir / "inkscape_wps" / "core" / "types.py"
+    types_file.write_text(
+        '"""types module"""\n\n'
+        "class VectorPath:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    return temp_project_dir
 
 
 @pytest.fixture

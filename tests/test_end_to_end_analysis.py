@@ -1,9 +1,10 @@
 """End-to-end integration tests for the code review analyzer."""
 
+
 import pytest
-from pathlib import Path
+
 from code_review_analyzer.analyzer_coordinator import AnalyzerCoordinator
-from code_review_analyzer.models import IssueSeverity, IssueCategory
+from code_review_analyzer.models import IssueCategory, IssueSeverity
 
 
 @pytest.fixture
@@ -152,6 +153,20 @@ def test_save_report(project_with_issues, tmp_path):
     assert "inkscape_wps 代码审查分析报告" in content
 
 
+def test_save_html_report(project_with_issues, tmp_path):
+    """Test saving an HTML report to file."""
+    coordinator = AnalyzerCoordinator(project_with_issues)
+    coordinator.run_all_analyzers()
+
+    output_file = tmp_path / "report.html"
+    coordinator.save_report(output_file, report_format="html")
+
+    assert output_file.exists()
+    content = output_file.read_text()
+    assert "<!DOCTYPE html>" in content
+    assert "<html" in content
+
+
 def test_collect_results(project_with_issues):
     """Test collecting analysis results."""
     coordinator = AnalyzerCoordinator(project_with_issues)
@@ -165,3 +180,4 @@ def test_collect_results(project_with_issues):
     # Verify result structure
     summary = result.summary()
     assert summary["total_issues"] == len(result.issues)
+    assert summary["total_files_analyzed"] > 0

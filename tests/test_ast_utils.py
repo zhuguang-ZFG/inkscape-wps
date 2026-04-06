@@ -1,8 +1,8 @@
 """AST 工具的单元测试"""
 
-import pytest
 import ast
 from pathlib import Path
+
 from code_review_analyzer.analyzers import ast_utils
 
 

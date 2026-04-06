@@ -12,22 +12,17 @@
 这些问题被标记为 HIGH 或 MEDIUM 严重程度，影响代码的可维护性和性能。
 """
 
-import ast
-from pathlib import Path
-from typing import List
 
-from ..models import Issue, IssueSeverity, IssueCategory, AnalysisResult
-from .base_analyzer import BaseAnalyzer
+from ..models import AnalysisResult, Issue, IssueCategory, IssueSeverity
 from .ast_utils import (
-    parse_python_file,
-    count_lines,
-    find_function_definitions,
-    find_class_definitions,
-    find_attribute_access,
-    find_method_calls,
     count_dataclass_fields,
     count_instance_variables,
+    count_lines,
+    find_class_definitions,
+    find_function_definitions,
+    parse_python_file,
 )
+from .base_analyzer import BaseAnalyzer
 
 
 class DesignIssueAnalyzer(BaseAnalyzer):
@@ -79,7 +74,10 @@ class DesignIssueAnalyzer(BaseAnalyzer):
                     self.add_issue(Issue(
                         id=f"design_method_size_{filepath.name}_{func_name}",
                         title=f"方法过大：{func_name}",
-                        description=f"方法 {func_name} 在 {filepath.name} 中包含 {size} 行代码，超过 600 行的建议上限",
+                        description=(
+                            f"方法 {func_name} 在 {filepath.name} 中包含 {size} 行代码，"
+                            "超过 600 行的建议上限"
+                        ),
                         category=IssueCategory.DESIGN,
                         severity=IssueSeverity.HIGH,
                         file_path=str(filepath),
@@ -108,12 +106,18 @@ class DesignIssueAnalyzer(BaseAnalyzer):
                     self.add_issue(Issue(
                         id="design_config_bloat",
                         title="MachineConfig 字段过多",
-                        description=f"MachineConfig 包含 {field_count} 个字段，超过 25 个的建议上限",
+                        description=(
+                            f"MachineConfig 包含 {field_count} 个字段，"
+                            "超过 25 个的建议上限"
+                        ),
                         category=IssueCategory.DESIGN,
                         severity=IssueSeverity.HIGH,
                         file_path=str(config_file),
                         line_number=start_line,
-                        suggestion="考虑拆分为 MachineConfig（硬件参数）和 AppPreferences（UI 状态）",
+                        suggestion=(
+                            "考虑拆分为 MachineConfig（硬件参数）和 "
+                            "AppPreferences（UI 状态）"
+                        ),
                     ))
     
     def check_ui_state_variables(self) -> None:
@@ -151,17 +155,6 @@ class DesignIssueAnalyzer(BaseAnalyzer):
         if tree is None:
             return
         
-        # 检查 transform 属性支持 - 查找 transform 相关的处理
-        functions = find_function_definitions(tree)
-        has_transform_support = False
-        has_use_support = False
-        
-        for func_name, _, _ in functions:
-            if "transform" in func_name.lower():
-                has_transform_support = True
-            if "use" in func_name.lower():
-                has_use_support = True
-        
         # 检查源代码中的 transform 处理
         with open(svg_file, "r", encoding="utf-8") as f:
             content = f.read()
@@ -170,7 +163,10 @@ class DesignIssueAnalyzer(BaseAnalyzer):
             self.add_issue(Issue(
                 id="design_svg_transform",
                 title="SVG transform 属性不支持",
-                description="svg_import.py 不支持 SVG transform 属性（translate、rotate、scale、matrix）",
+                description=(
+                    "svg_import.py 不支持 SVG transform 属性"
+                    "（translate、rotate、scale、matrix）"
+                ),
                 category=IssueCategory.DESIGN,
                 severity=IssueSeverity.HIGH,
                 file_path=str(svg_file),
@@ -218,7 +214,10 @@ class DesignIssueAnalyzer(BaseAnalyzer):
                     self.add_issue(Issue(
                         id="design_gcode_m5",
                         title="Z 模式下仍然发送 M5 命令",
-                        description="gcode.py 在 Z 轴模式下仍然发送 M5 命令，与 Z 轴模式的设计不一致",
+                        description=(
+                            "gcode.py 在 Z 轴模式下仍然发送 M5 命令，"
+                            "与 Z 轴模式的设计不一致"
+                        ),
                         category=IssueCategory.DESIGN,
                         severity=IssueSeverity.HIGH,
                         file_path=str(gcode_file),
@@ -272,10 +271,8 @@ class DesignIssueAnalyzer(BaseAnalyzer):
         if "with" in content and "lock" in content and "open(" in content:
             # 检查是否在同一个 with 块中
             lines = content.split("\n")
-            in_lock_block = False
             for i, line in enumerate(lines):
                 if "with" in line and "lock" in line:
-                    in_lock_block = True
                     # 检查接下来的 10 行是否有 open()
                     for j in range(i, min(i+10, len(lines))):
                         if "open(" in lines[j]:

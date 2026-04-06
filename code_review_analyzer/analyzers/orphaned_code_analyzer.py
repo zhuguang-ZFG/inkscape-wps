@@ -2,11 +2,11 @@
 
 import ast
 from pathlib import Path
-from typing import Set, Dict, List, Tuple
+from typing import Dict, List, Set, Tuple
 
-from ..models import Issue, IssueSeverity, IssueCategory, AnalysisResult
+from ..models import AnalysisResult, Issue, IssueCategory, IssueSeverity
+from .ast_utils import find_class_definitions, parse_python_file
 from .base_analyzer import BaseAnalyzer
-from .ast_utils import parse_python_file, find_class_definitions, find_imports
 
 
 class OrphanedCodeAnalyzer(BaseAnalyzer):
@@ -78,6 +78,18 @@ class OrphanedCodeAnalyzer(BaseAnalyzer):
                     # 记录属性调用
                     self.analyzer.used_symbols.add(node.func.attr)
                 
+                self.generic_visit(node)
+
+            def visit_Import(self, node: ast.Import) -> None:
+                for alias in node.names:
+                    imported_name = alias.asname or alias.name.split(".")[-1]
+                    self.analyzer.used_symbols.add(imported_name)
+                self.generic_visit(node)
+
+            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+                for alias in node.names:
+                    imported_name = alias.asname or alias.name
+                    self.analyzer.used_symbols.add(imported_name)
                 self.generic_visit(node)
         
         visitor = CallVisitor(self)

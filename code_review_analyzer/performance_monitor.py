@@ -4,12 +4,12 @@
 内存使用等性能指标。
 """
 
-import time
-import psutil
 import os
-from typing import Dict, Optional
+import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from typing import Dict, Optional
+
+import psutil
 
 
 @dataclass
@@ -63,11 +63,16 @@ class PerformanceMetrics:
         Returns:
             包含性能指标的字典
         """
+        files_per_second = (
+            f"{self.files_analyzed / self.total_duration:.1f}"
+            if self.total_duration > 0
+            else "N/A"
+        )
         return {
             "total_duration_seconds": f"{self.total_duration:.2f}",
             "files_analyzed": self.files_analyzed,
             "issues_found": self.issues_found,
-            "files_per_second": f"{self.files_analyzed / self.total_duration:.1f}" if self.total_duration > 0 else "N/A",
+            "files_per_second": files_per_second,
             "memory_start_mb": f"{self.start_memory_mb:.1f}",
             "memory_peak_mb": f"{self.peak_memory_mb:.1f}",
             "memory_end_mb": f"{self.end_memory_mb:.1f}",

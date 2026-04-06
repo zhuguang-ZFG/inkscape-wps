@@ -1,11 +1,10 @@
 """Unit tests for RuntimeCrashAnalyzer."""
 
+
 import pytest
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 from code_review_analyzer.analyzers.runtime_crash_analyzer import RuntimeCrashAnalyzer
-from code_review_analyzer.models import IssueSeverity, IssueCategory
+from code_review_analyzer.models import IssueCategory, IssueSeverity
 
 
 class TestRuntimeCrashAnalyzer:

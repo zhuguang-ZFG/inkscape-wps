@@ -1,6 +1,6 @@
 """Tests for report generator."""
 
-from code_review_analyzer.models import AnalysisResult, Issue, IssueSeverity, IssueCategory
+from code_review_analyzer.models import AnalysisResult, Issue, IssueCategory, IssueSeverity
 from code_review_analyzer.reporters.report_generator import ReportGenerator
 
 

@@ -41,6 +41,13 @@ pip install -r requirements.txt
 pip install -r requirements-dev.txt
 ```
 
+或直接使用项目命令：
+
+```bash
+make install-dev
+make install
+```
+
 ## 文档
 
 | 文件 | 说明 |
@@ -76,6 +83,26 @@ make test
 make lint
 make typecheck
 ```
+
+## 打包分发
+
+运行依赖已声明在 `pyproject.toml` 的 `project.dependencies` 中，因此使用：
+
+```bash
+pip install .
+# 或
+pip install -e .
+```
+
+时会自动安装运行所需依赖。
+
+如果后续需要生成可直接分发的桌面包，而不是要求目标机器再单独安装 Python 依赖，可使用：
+
+```bash
+make bundle
+```
+
+该命令会调用 `PyInstaller`，读取 `packaging/inkscape_wps.spec`，把 Qt、Fluent 资源和项目数据文件一起打入分发产物。
 
 `make verify` 和 `make verify-strict` 会额外写出结构化结果到 `logs/verify-report.json`，方便本地排错或在 CI 中作为构建产物保存。
 

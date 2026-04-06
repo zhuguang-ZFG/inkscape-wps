@@ -709,7 +709,10 @@ class WpsTableEditorPyQt5(QWidget):
 
         page_h = float(self._cfg.page_height_mm)
 
-        def _norm(a: tuple[float, float], b: tuple[float, float]) -> tuple[tuple[float, float], tuple[float, float]]:
+        def _norm(
+            a: tuple[float, float],
+            b: tuple[float, float],
+        ) -> tuple[tuple[float, float], tuple[float, float]]:
             return (a, b) if a <= b else (b, a)
 
         if mode == "outer":

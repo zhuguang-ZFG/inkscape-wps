@@ -1,9 +1,10 @@
 """运行时崩溃检测器的单元测试"""
 
+
 import pytest
-from pathlib import Path
+
 from code_review_analyzer.analyzers.runtime_crash_analyzer import RuntimeCrashAnalyzer
-from code_review_analyzer.models import IssueSeverity, IssueCategory
+from code_review_analyzer.models import IssueSeverity
 
 
 @pytest.fixture
@@ -68,3 +69,56 @@ def test_issue_severity_levels(analyzer):
     
     for issue in medium_issues:
         assert issue.severity == IssueSeverity.MEDIUM
+
+
+def test_len_paths_is_not_reported_as_vector_path_crash(temp_project_dir):
+    """Only len(path) should be flagged, not len(paths) or len(path.points)."""
+    service_file = temp_project_dir / "inkscape_wps" / "core" / "services" / "gcode_service.py"
+    service_file.write_text(
+        "class Example:\n"
+        "    def check(self, paths, path):\n"
+        "        total = len(paths)\n"
+        "        points = len(path.points)\n"
+        "        return total + points\n",
+        encoding="utf-8",
+    )
+
+    analyzer = RuntimeCrashAnalyzer(temp_project_dir)
+    analyzer.analyze_gcode_service()
+
+    issues = [issue for issue in analyzer.result.issues if issue.id == "gcode_service_002"]
+    assert issues == []
+
+
+def test_len_path_is_reported_as_vector_path_crash(temp_project_dir):
+    """Direct len(path) calls should still be flagged."""
+    service_file = temp_project_dir / "inkscape_wps" / "core" / "services" / "gcode_service.py"
+    service_file.write_text(
+        "class Example:\n"
+        "    def check(self, path):\n"
+        "        return len(path)\n",
+        encoding="utf-8",
+    )
+
+    analyzer = RuntimeCrashAnalyzer(temp_project_dir)
+    analyzer.analyze_gcode_service()
+
+    issues = [issue for issue in analyzer.result.issues if issue.id == "gcode_service_002"]
+    assert len(issues) == 1
+    assert issues[0].line_number == 3
+
+
+def test_font_service_async_warnings_are_not_reported_as_runtime_crashes(temp_project_dir):
+    """Async-without-await belongs to code quality, not runtime crash analysis."""
+    service_file = temp_project_dir / "inkscape_wps" / "core" / "services" / "font_service.py"
+    service_file.write_text(
+        "class FontService:\n"
+        "    async def discover_fonts(self):\n"
+        "        return []\n",
+        encoding="utf-8",
+    )
+
+    analyzer = RuntimeCrashAnalyzer(temp_project_dir)
+    analyzer.analyze_font_service()
+
+    assert analyzer.result.issues == []

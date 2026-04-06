@@ -12,9 +12,7 @@
 import ast
 import hashlib
 from pathlib import Path
-from typing import Optional, Dict, Tuple
-import json
-from datetime import datetime
+from typing import Dict, Optional, Tuple
 
 
 class CacheManager:

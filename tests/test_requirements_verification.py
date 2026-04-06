@@ -1,9 +1,10 @@
 """Verification tests for all requirements."""
 
+
 import pytest
-from pathlib import Path
+
 from code_review_analyzer.analyzer_coordinator import AnalyzerCoordinator
-from code_review_analyzer.models import IssueSeverity, IssueCategory
+from code_review_analyzer.models import IssueCategory
 
 
 @pytest.fixture
@@ -183,7 +184,8 @@ def test_requirement_4_code_quality_detection(full_project):
     
     # Code quality analyzer should run and find issues
     assert isinstance(quality_issues, list)
-    # Should find at least some quality issues (constant calculations, logging f-strings, async without await)
+    # Should find at least some quality issues:
+    # constant calculations, logging f-strings, async without await.
     assert len(quality_issues) > 0
 
 
@@ -264,8 +266,8 @@ def test_report_contains_all_issues(full_project):
 def test_cli_parameters_supported(full_project):
     """Verify CLI supports all required parameters."""
     # This is a structural test - the CLI module should have these parameters
+
     from code_review_analyzer.cli import main
-    import sys
     
     # Test that CLI can be imported and has main function
     assert callable(main)

@@ -11,17 +11,14 @@
 
 import ast
 import re
-from pathlib import Path
-from typing import List, Tuple
 
-from ..models import Issue, IssueSeverity, IssueCategory, AnalysisResult
-from .base_analyzer import BaseAnalyzer
+from ..models import AnalysisResult, Issue, IssueCategory, IssueSeverity
 from .ast_utils import (
-    parse_python_file,
-    find_function_definitions,
     find_async_functions_without_await,
     find_duplicate_branches,
+    parse_python_file,
 )
+from .base_analyzer import BaseAnalyzer
 
 
 class CodeQualityAnalyzer(BaseAnalyzer):
@@ -52,7 +49,10 @@ class CodeQualityAnalyzer(BaseAnalyzer):
                 self.add_issue(Issue(
                     id=f"quality_dup_branch_{filepath.name}_{line_no}",
                     title="条件分支代码重复",
-                    description=f"在 {filepath.name} 的第 {line_no} 行，{branch_type} 分支的代码完全相同",
+                    description=(
+                        f"在 {filepath.name} 的第 {line_no} 行，"
+                        f"{branch_type} 分支的代码完全相同"
+                    ),
                     category=IssueCategory.CODE_QUALITY,
                     severity=IssueSeverity.MEDIUM,
                     file_path=str(filepath),
@@ -77,7 +77,10 @@ class CodeQualityAnalyzer(BaseAnalyzer):
                 self.add_issue(Issue(
                     id=f"quality_const_calc_{filepath.name}_{line_no}",
                     title="常数计算",
-                    description=f"在 {filepath.name} 的第 {line_no} 行，计算 {match.group(0)} 永远为 1.0",
+                    description=(
+                        f"在 {filepath.name} 的第 {line_no} 行，"
+                        f"计算 {match.group(0)} 永远为 1.0"
+                    ),
                     category=IssueCategory.CODE_QUALITY,
                     severity=IssueSeverity.MEDIUM,
                     file_path=str(filepath),
@@ -100,7 +103,10 @@ class CodeQualityAnalyzer(BaseAnalyzer):
                 self.add_issue(Issue(
                     id=f"quality_async_no_await_{filepath.name}_{func_name}",
                     title="async 函数中无 await 调用",
-                    description=f"函数 {func_name} 在 {filepath.name} 中被标记为 async 但没有任何 await 调用",
+                    description=(
+                        f"函数 {func_name} 在 {filepath.name} 中被标记为 async，"
+                        "但没有任何 await 调用"
+                    ),
                     category=IssueCategory.CODE_QUALITY,
                     severity=IssueSeverity.MEDIUM,
                     file_path=str(filepath),
@@ -114,64 +120,79 @@ class CodeQualityAnalyzer(BaseAnalyzer):
         python_files = self.get_python_files(self.project_root / "inkscape_wps")
         
         for filepath in python_files:
-            with open(filepath, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-            
-            for line_no, line in enumerate(lines, 1):
-                # 检查 logging 调用中的 f-string
-                if any(log_func in line for log_func in ['_logger.', 'logging.']):
-                    if 'f"' in line or "f'" in line:
-                        self.add_issue(Issue(
-                            id=f"quality_log_fstring_{filepath.name}_{line_no}",
+            tree = parse_python_file(filepath)
+            if tree is None:
+                continue
+
+            class LoggingVisitor(ast.NodeVisitor):
+                def __init__(self, analyzer):
+                    self.analyzer = analyzer
+
+                def visit_Call(self, node: ast.Call) -> None:
+                    if (
+                        isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "debug"
+                        and node.args
+                        and isinstance(node.args[0], ast.JoinedStr)
+                    ):
+                        self.analyzer.add_issue(Issue(
+                            id=f"quality_log_fstring_{filepath.name}_{node.lineno}",
                             title="日志调用中使用 f-string",
-                            description=f"在 {filepath.name} 的第 {line_no} 行，日志调用中使用了 f-string",
+                            description=(
+                                f"在 {filepath.name} 的第 {node.lineno} 行，"
+                                "debug 日志调用中使用了 f-string"
+                            ),
                             category=IssueCategory.CODE_QUALITY,
                             severity=IssueSeverity.LOW,
                             file_path=str(filepath),
-                            line_number=line_no,
-                            code_snippet=line.strip(),
-                            suggestion="改为参数化日志：logger.error('message', var) 而不是 logger.error(f'message {var}')",
+                            line_number=node.lineno,
+                            code_snippet=ast.unparse(node),
+                            suggestion="改为参数化日志：logger.debug('message %s', var)",
                         ))
+                    self.generic_visit(node)
+
+            LoggingVisitor(self).visit(tree)
 
     
     def check_unused_methods(self) -> None:
         """检查未使用的方法"""
-        # 这是一个复杂的分析，需要构建完整的调用图
-        # 对于现在，我们只是检查一些常见的未使用方法模式
         python_files = self.get_python_files(self.project_root / "inkscape_wps")
         
-        # 收集所有定义的方法
+        # 只检查私有 helper。公共方法可能由框架回调、反射或外部调用触发，
+        # 简单静态搜索很容易造成大量误报。
         defined_methods = {}
-        used_methods = set()
+        used_method_names = set()
         
         for filepath in python_files:
             tree = parse_python_file(filepath)
             if tree is None:
                 continue
             
-            # 收集定义的方法
             for node in ast.walk(tree):
                 if isinstance(node, ast.ClassDef):
                     for item in node.body:
                         if isinstance(item, ast.FunctionDef):
                             method_name = item.name
-                            if not method_name.startswith('_'):  # 跳过私有方法
-                                defined_methods[f"{node.name}.{method_name}"] = (filepath, item.lineno)
+                            if method_name.startswith("_") and not (
+                                method_name.startswith("__") and method_name.endswith("__")
+                            ):
+                                defined_methods[f"{node.name}.{method_name}"] = (
+                                    filepath,
+                                    item.lineno,
+                                )
         
-        # 收集使用的方法
         for filepath in python_files:
-            with open(filepath, "r", encoding="utf-8") as f:
-                content = f.read()
-            
-            for method_name in defined_methods:
-                class_name, func_name = method_name.split('.')
-                # 简单的模式匹配：查找方法调用
-                if f".{func_name}(" in content or f"self.{func_name}(" in content:
-                    used_methods.add(method_name)
+            tree = parse_python_file(filepath)
+            if tree is None:
+                continue
+
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute):
+                    used_method_names.add(node.attr)
         
-        # 报告未使用的方法
         for method_name, (filepath, line_no) in defined_methods.items():
-            if method_name not in used_methods:
+            _, func_name = method_name.split(".")
+            if func_name not in used_method_names:
                 self.add_issue(Issue(
                     id=f"quality_unused_method_{method_name}",
                     title="未使用的方法",

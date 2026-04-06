@@ -1,9 +1,7 @@
 """HTML 报告生成器"""
 
-from pathlib import Path
-from typing import Dict, List
 
-from ..models import AnalysisResult, IssueSeverity, IssueCategory
+from ..models import IssueCategory, IssueSeverity
 from .base_reporter import BaseReporter
 
 
@@ -37,7 +35,8 @@ class HTMLReporter(BaseReporter):
         }
         
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+                'Helvetica Neue', Arial, sans-serif;
             line-height: 1.6;
             color: #333;
             background: #f5f5f5;
@@ -301,7 +300,12 @@ class HTMLReporter(BaseReporter):
         """按严重程度生成问题列表"""
         html = "<h2>🔴 按严重程度分类</h2>\n"
         
-        for severity in [IssueSeverity.CRITICAL, IssueSeverity.HIGH, IssueSeverity.MEDIUM, IssueSeverity.LOW]:
+        for severity in (
+            IssueSeverity.CRITICAL,
+            IssueSeverity.HIGH,
+            IssueSeverity.MEDIUM,
+            IssueSeverity.LOW,
+        ):
             issues = self.result.get_issues_by_severity(severity)
             
             if not issues:
@@ -322,7 +326,10 @@ class HTMLReporter(BaseReporter):
                 html += '    </div>\n'
                 html += f'    <div class="issue-description">{issue.description}</div>\n'
                 if issue.suggestion:
-                    html += f'    <div class="issue-suggestion"><strong>建议：</strong> {issue.suggestion}</div>\n'
+                    html += (
+                        '    <div class="issue-suggestion"><strong>建议：</strong> '
+                        f"{issue.suggestion}</div>\n"
+                    )
                 html += '</div>\n'
         
         return html

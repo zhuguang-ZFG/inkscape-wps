@@ -16,7 +16,7 @@
 
 import ast
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple
 
 # 全局缓存管理器（延迟初始化）
 _cache_manager = None
@@ -334,7 +334,10 @@ def count_instance_variables(tree: ast.Module, class_name: str) -> int:
                             if isinstance(stmt, ast.Assign):
                                 for target in stmt.targets:
                                     if isinstance(target, ast.Attribute):
-                                        if isinstance(target.value, ast.Name) and target.value.id == "self":
+                                        if (
+                                            isinstance(target.value, ast.Name)
+                                            and target.value.id == "self"
+                                        ):
                                             count += 1
             self.generic_visit(node)
     

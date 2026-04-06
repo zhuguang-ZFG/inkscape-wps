@@ -1,9 +1,10 @@
 """设计问题检测器的单元测试"""
 
+
 import pytest
-from pathlib import Path
+
 from code_review_analyzer.analyzers.design_issue_analyzer import DesignIssueAnalyzer
-from code_review_analyzer.models import IssueCategory, IssueSeverity
+from code_review_analyzer.models import IssueSeverity
 
 
 @pytest.fixture

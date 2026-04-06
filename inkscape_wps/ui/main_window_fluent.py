@@ -97,6 +97,7 @@ from inkscape_wps.core.grbl import (
     verify_grbl_responsive,
 )
 from inkscape_wps.core.hershey import HersheyFontMapper, map_document_lines
+from inkscape_wps.core.kdraw_paths import suggest_gcode_fonts_dirs
 from inkscape_wps.core.machine_monitor import MachineMonitor
 from inkscape_wps.core.office_export import (
     DocParagraph,
@@ -125,7 +126,6 @@ from inkscape_wps.core.project_io import (
     serialize_vector_paths,
     write_text_atomic,
 )
-from inkscape_wps.core.kdraw_paths import suggest_gcode_fonts_dirs
 from inkscape_wps.core.raster_trace import trace_image_to_svg
 from inkscape_wps.core.serial_discovery import filter_ports, list_port_infos
 from inkscape_wps.core.svg_import import vector_paths_from_svg_file, vector_paths_from_svg_string
@@ -620,6 +620,65 @@ class MainWindowFluent(FluentWindow):
             return f"DOCX 将按当前“{source}”内容导出。"
         return f"{target_name} 将按当前“{source}”内容导出。"
 
+    def _notify_office_export_success(self, target_name: str, path: Path) -> None:
+        self._log_event("导出", f"{target_name} 已导出到 {path.name}")
+        if target_name == "DOCX":
+            msg = f"DOCX 已生成：{Path(path).name}。{self._office_export_tip('DOCX')}"
+        elif target_name == "XLSX":
+            msg = f"XLSX 已生成：{Path(path).name}。{self._office_export_tip('XLSX')}"
+        elif target_name == "PPTX":
+            msg = f"PPTX 已生成：{Path(path).name}。{self._office_export_tip('PPTX')}"
+        else:
+            msg = f"Markdown 已生成：{Path(path).name}。{self._office_export_tip('Markdown')}"
+        self._notify_success("已导出", msg)
+
+    def _import_success_tip(self, kind: str, target_mode: str) -> str:
+        if kind == "xlsx":
+            return "建议先检查表格尺寸、网格线与右侧预览，再导出或发送。"
+        if kind == "pptx":
+            return "建议先翻看页数、母版文字和右侧预览，再导出或发送。"
+        if kind == "md":
+            if target_mode == "演示":
+                return "Markdown 已按分节导入到演示，建议先检查每页内容与预览。"
+            return "建议先检查段落换行与字形覆盖，再导出或发送。"
+        return "建议先检查排版、字形覆盖和右侧预览，再导出或发送。"
+
+    def _set_pending_resume_program(self, lines: Optional[List[str]]) -> None:
+        self._pending_program_after_m800 = list(lines) if lines else None
+        if hasattr(self, "_btn_send_resume"):
+            self._btn_send_resume.setEnabled(bool(lines))
+
+    def _normalize_render_mode(self, mode: object) -> str:
+        return "outline" if str(mode or "stroke") == "outline" else "stroke"
+
+    def _sync_render_mode_combo(self, combo_name: str, mode: str) -> None:
+        if not hasattr(self, combo_name):
+            return
+        combo = getattr(self, combo_name)
+        idx = combo.findData(mode)
+        if idx < 0 or combo.currentIndex() == idx:
+            return
+        combo.blockSignals(True)
+        combo.setCurrentIndex(idx)
+        combo.blockSignals(False)
+
+    def _export_tooltip(self, *, kind: str, content_label: str, enabled: bool, button: bool) -> str:
+        if kind == "xlsx":
+            if enabled:
+                return "当前来源为表格，可导出 XLSX。"
+            return (
+                f"请先切到表格；当前来源：{content_label}。"
+                if button
+                else f"XLSX 仅支持表格；当前来源：{content_label}。"
+            )
+        if enabled:
+            return "当前来源为演示，可导出 PPTX。"
+        return (
+            f"请先切到演示；当前来源：{content_label}。"
+            if button
+            else f"PPTX 仅支持演示；当前来源：{content_label}。"
+        )
+
     def _preflight_report(self) -> tuple[str, List[str]]:
         pid = self._current_content_page_id()
         source = self._content_mode_label(pid)
@@ -822,8 +881,62 @@ class MainWindowFluent(FluentWindow):
         title.setStyleSheet(f"color:{color};font-size:13px;font-weight:700;")
         detail.setStyleSheet("color:#52606d;font-size:12px;line-height:1.45;")
 
+    def _workflow_guidance_payload(self) -> tuple[str, str, str, str]:
+        action, label, tip = self._health_primary_action_spec()
+        pid = self._current_content_page_id()
+        source = self._content_mode_label(pid)
+        if action == "missing":
+            return (
+                "下一步建议  ·  先补齐字形",
+                f"当前“{source}”存在缺失字符。先补字形，再预览、导出或发送会更稳。",
+                label,
+                "#b06a12",
+            )
+        if action == "content":
+            return (
+                f"下一步建议  ·  先补充{source}内容",
+                f"当前预览还没有可导出的路径。{tip}",
+                label,
+                "#2f6fed",
+            )
+        if action == "device":
+            return (
+                "下一步建议  ·  先确认设备",
+                f"内容侧已经接近可用，下一步重点是设备连接、坐标和抬落笔参数。{tip}",
+                label,
+                "#b06a12" if self._grbl is None else "#c23b32",
+            )
+        return (
+            "下一步建议  ·  可以导出或发送",
+            f"当前“{source}”已经具备导出条件。{tip}",
+            label,
+            "#217346",
+        )
+
+    def _set_workflow_card_state(self, card: QFrame, title: QLabel, detail: QLabel) -> None:
+        workflow_title, workflow_detail, _label, color = self._workflow_guidance_payload()
+        title.setText(workflow_title)
+        detail.setText(workflow_detail)
+        card.setStyleSheet(
+            f"""
+            QFrame {{
+                background-color: #ffffff;
+                border: 1px solid {color};
+                border-radius: 14px;
+            }}
+            """
+        )
+        title.setStyleSheet(f"color:{color};font-size:13px;font-weight:700;")
+        detail.setStyleSheet("color:#52606d;font-size:12px;line-height:1.45;")
+
     def _refresh_health_action_button(self, button: QPushButton) -> None:
         _action, label, tip = self._health_primary_action_spec()
+        button.setText(label)
+        button.setToolTip(tip)
+
+    def _refresh_workflow_action_button(self, button: QPushButton) -> None:
+        _title, _detail, label, _color = self._workflow_guidance_payload()
+        _action, _health_label, tip = self._health_primary_action_spec()
         button.setText(label)
         button.setToolTip(tip)
 
@@ -833,12 +946,28 @@ class MainWindowFluent(FluentWindow):
             self._home_diag_summary.setText(text)
         if hasattr(self, "_dev_diag_summary"):
             self._dev_diag_summary.setText(text)
+        if hasattr(self, "_home_workflow_card"):
+            self._set_workflow_card_state(
+                self._home_workflow_card,
+                self._home_workflow_title,
+                self._home_workflow_detail,
+            )
+        if hasattr(self, "_home_workflow_action_btn"):
+            self._refresh_workflow_action_button(self._home_workflow_action_btn)
         if hasattr(self, "_home_health_card"):
             self._set_health_card_state(
                 self._home_health_card, self._home_health_title, self._home_health_detail
             )
         if hasattr(self, "_home_health_action_btn"):
             self._refresh_health_action_button(self._home_health_action_btn)
+        if hasattr(self, "_dev_workflow_card"):
+            self._set_workflow_card_state(
+                self._dev_workflow_card,
+                self._dev_workflow_title,
+                self._dev_workflow_detail,
+            )
+        if hasattr(self, "_dev_workflow_action_btn"):
+            self._refresh_workflow_action_button(self._dev_workflow_action_btn)
         if hasattr(self, "_dev_health_card"):
             self._set_health_card_state(
                 self._dev_health_card, self._dev_health_title, self._dev_health_detail
@@ -893,17 +1022,24 @@ class MainWindowFluent(FluentWindow):
         out.append(f"- 当前插入矢量点数：{total_points}")
         out.append(f"- 当前插图缩放：{self._insert_vector_scale:.3f}")
         out.append(
-            f"- 当前插图偏移：X {self._insert_vector_dx_mm:.2f} mm / Y {self._insert_vector_dy_mm:.2f} mm"
+            f"- 当前插图偏移：X {self._insert_vector_dx_mm:.2f} mm / "
+            f"Y {self._insert_vector_dy_mm:.2f} mm"
         )
         if not self._insert_paths_base:
-            out.append("- 未检测到插入矢量。若 SVG 导入后无图形，请先确认文件内是否真的含 path/polyline/line/rect 等可转折线元素。")
+            out.append(
+                "- 未检测到插入矢量。若 SVG 导入后无图形，请先确认文件内是否真的含 "
+                "path/polyline/line/rect 等可转折线元素。"
+            )
             out.append("- 若是位图描摹失败，请先提高原图黑白对比度，再重试描摹。")
             return out
         bb = paths_bounding_box(self._insert_paths_base)
         out.append(
             f"- 插入矢量包围盒：X {bb[0]:.2f}..{bb[2]:.2f} / Y {bb[1]:.2f}..{bb[3]:.2f} mm"
         )
-        out.append("- 若预览有图但 G-code 没有线，请继续检查：页面尺寸、镜像/偏移、以及最终工作路径是否为空。")
+        out.append(
+            "- 若预览有图但 G-code 没有线，请继续检查：页面尺寸、镜像/偏移、"
+            "以及最终工作路径是否为空。"
+        )
         return out
 
     def _font_diagnostic_lines(self) -> List[str]:
@@ -912,7 +1048,8 @@ class MainWindowFluent(FluentWindow):
         merge_font = _resolve_merge_stroke_font_path(self._cfg)
         out.append(f"- 主字库：{base_font if base_font is not None else '未找到'}")
         out.append(f"- 合并字库：{merge_font if merge_font is not None else '未设置'}")
-        out.append(f"- 奎享 mm/unit：{float(getattr(self._cfg, 'kuixiang_mm_per_unit', 0.01530)):.5f}")
+        kuixiang_unit = float(getattr(self._cfg, "kuixiang_mm_per_unit", 0.01530))
+        out.append(f"- 奎享 mm/unit：{kuixiang_unit:.5f}")
         pid = self._current_content_page_id()
         missing = self._missing_glyph_chars(pid)
         out.append(f"- 当前内容缺字形数量：{len(missing)}")
@@ -921,10 +1058,19 @@ class MainWindowFluent(FluentWindow):
             if len(missing) > 12:
                 preview += " ..."
             out.append(f"- 缺失字符预览：{preview}")
-            out.append("- 若使用奎享 JSON，请先确认该 JSON 是已导出的文本字库，而不是原始 .gfont 二进制。")
-            out.append("- 若已修改 mm/unit，已载入的奎享字形不会自动重算；建议重新加载字库后再检查。")
+            out.append(
+                "- 若使用奎享 JSON，请先确认该 JSON 是已导出的文本字库，而不是原始 "
+                ".gfont 二进制。"
+            )
+            out.append(
+                "- 若已修改 mm/unit，已载入的奎享字形不会自动重算；"
+                "建议重新加载字库后再检查。"
+            )
         else:
-            out.append("- 当前内容字形覆盖正常。若仍有缺笔画，更可能是路径过小、参数过细或字库本身笔画定义不完整。")
+            out.append(
+                "- 当前内容字形覆盖正常。若仍有缺笔画，更可能是路径过小、参数过细，"
+                "或字库本身笔画定义不完整。"
+            )
         return out
 
     def _show_svg_diagnostics(self) -> None:
@@ -1444,6 +1590,19 @@ class MainWindowFluent(FluentWindow):
         _home_hint.setWordWrap(True)
         _home_hint.setStyleSheet("color:#52606d;font-size:12px;")
         hl.addWidget(_home_hint)
+        self._home_workflow_card = QFrame()
+        home_workflow_layout = QVBoxLayout(self._home_workflow_card)
+        home_workflow_layout.setContentsMargins(14, 14, 14, 14)
+        home_workflow_layout.setSpacing(6)
+        self._home_workflow_title = QLabel("下一步建议")
+        self._home_workflow_detail = QLabel()
+        self._home_workflow_detail.setWordWrap(True)
+        home_workflow_layout.addWidget(self._home_workflow_title)
+        home_workflow_layout.addWidget(self._home_workflow_detail)
+        self._home_workflow_action_btn = PrimaryPushButton("继续下一步")
+        self._home_workflow_action_btn.clicked.connect(self._run_health_primary_action)
+        home_workflow_layout.addWidget(self._home_workflow_action_btn)
+        hl.addWidget(self._home_workflow_card)
         self._home_health_card = QFrame()
         home_health_layout = QVBoxLayout(self._home_health_card)
         home_health_layout.setContentsMargins(14, 14, 14, 14)
@@ -1936,6 +2095,10 @@ class MainWindowFluent(FluentWindow):
         self._conn_mode_combo.addItem("Wi-Fi / Telnet (TCP)", "tcp")
         self._conn_mode_combo.currentIndexChanged.connect(self._on_connection_mode_changed)
         sv.addWidget(self._conn_mode_combo)
+        conn_hint = QLabel("先选连接方式，再连接设备；不确定时通常选串口 / 蓝牙。")
+        conn_hint.setWordWrap(True)
+        conn_hint.setStyleSheet("color:#6b7280;font-size:12px;")
+        sv.addWidget(conn_hint)
         self._cb_bt_only = CheckBox("仅列出疑似蓝牙串口")
         self._cb_bt_only.setChecked(bool(getattr(self._cfg, "serial_show_bluetooth_only", False)))
         self._cb_bt_only.stateChanged.connect(lambda _: self._on_fluent_bluetooth_filter_changed())
@@ -2001,10 +2164,18 @@ class MainWindowFluent(FluentWindow):
         sv.addWidget(self._tcp_host_edit)
         sv.addWidget(QLabel("TCP 端口"))
         sv.addWidget(self._tcp_port_spin)
-        sv.addWidget(QLabel("Streaming"))
+        sv.addWidget(QLabel("发送方式"))
         sv.addWidget(self._cb_stream)
-        sv.addWidget(QLabel("RX 缓冲预算（字节估算）"))
+        stream_hint = QLabel("关闭时逐行等待确认更稳；开启后更快，但更依赖设备缓冲和连线质量。")
+        stream_hint.setWordWrap(True)
+        stream_hint.setStyleSheet("color:#6b7280;font-size:12px;")
+        sv.addWidget(stream_hint)
+        sv.addWidget(QLabel("接收缓冲预算（RX）"))
         sv.addWidget(self._rx_buf_spin)
+        rx_hint = QLabel("这是给发送器估算的设备接收余量；不确定时先保留默认值。")
+        rx_hint.setWordWrap(True)
+        rx_hint.setStyleSheet("color:#6b7280;font-size:12px;")
+        sv.addWidget(rx_hint)
         sv.addWidget(self._btn_connect)
         sv.addWidget(self._btn_send)
         sv.addWidget(self._btn_send_pause_m800)
@@ -2024,12 +2195,12 @@ class MainWindowFluent(FluentWindow):
         self._register_device_setting_group(gb_gc)
         gv = QVBoxLayout(gb_gc)
         gv.setSpacing(8)
-        self._cb_g92 = CheckBox("使用 G92（程序头对零）")
+        self._cb_g92 = CheckBox("程序开始时临时对零（G92）")
         self._cb_g92.setChecked(bool(getattr(self._cfg, "gcode_use_g92", True)))
         self._cb_g92.stateChanged.connect(
             lambda _: setattr(self._cfg, "gcode_use_g92", self._cb_g92.isChecked())
         )
-        self._cb_m30 = CheckBox("结尾用 M30（否则 M2）")
+        self._cb_m30 = CheckBox("程序结束发送 M30（否则 M2）")
         self._cb_m30.setChecked(bool(getattr(self._cfg, "gcode_end_m30", False)))
         self._cb_m30.stateChanged.connect(
             lambda _: setattr(self._cfg, "gcode_end_m30", self._cb_m30.isChecked())
@@ -2050,9 +2221,13 @@ class MainWindowFluent(FluentWindow):
         )
         gv.addWidget(self._cb_g92)
         gv.addWidget(self._cb_m30)
-        gv.addWidget(QLabel("程序前缀"))
+        gcode_hint = QLabel("前缀会在正式路径前发送，后缀会在末尾发送；不确定时可先留空。")
+        gcode_hint.setWordWrap(True)
+        gcode_hint.setStyleSheet("color:#6b7280;font-size:12px;")
+        gv.addWidget(gcode_hint)
+        gv.addWidget(QLabel("开始前附加指令"))
         gv.addWidget(self._prefix_edit)
-        gv.addWidget(QLabel("程序后缀"))
+        gv.addWidget(QLabel("结束后附加指令"))
         gv.addWidget(self._suffix_edit)
         self._btn_save_cfg = PrimaryPushButton("保存配置到本机")
         self._btn_save_cfg.setToolTip("写入 ~/.config/inkscape-wps/ 下 machine_config.toml/json")
@@ -2131,6 +2306,19 @@ class MainWindowFluent(FluentWindow):
         self._dev_connection_hint.setWordWrap(True)
         self._dev_connection_hint.setStyleSheet("color:#66727e;font-size:12px;")
         hero_layout.addWidget(self._dev_connection_hint)
+        self._dev_workflow_card = QFrame()
+        dev_workflow_layout = QVBoxLayout(self._dev_workflow_card)
+        dev_workflow_layout.setContentsMargins(14, 14, 14, 14)
+        dev_workflow_layout.setSpacing(6)
+        self._dev_workflow_title = QLabel("下一步建议")
+        self._dev_workflow_detail = QLabel()
+        self._dev_workflow_detail.setWordWrap(True)
+        dev_workflow_layout.addWidget(self._dev_workflow_title)
+        dev_workflow_layout.addWidget(self._dev_workflow_detail)
+        self._dev_workflow_action_btn = PrimaryPushButton("继续下一步")
+        self._dev_workflow_action_btn.clicked.connect(self._run_health_primary_action)
+        dev_workflow_layout.addWidget(self._dev_workflow_action_btn)
+        hero_layout.addWidget(self._dev_workflow_card)
         self._dev_health_card = QFrame()
         dev_health_layout = QVBoxLayout(self._dev_health_card)
         dev_health_layout.setContentsMargins(14, 14, 14, 14)
@@ -3972,7 +4160,8 @@ class MainWindowFluent(FluentWindow):
         self._update_status_line()
         InfoBar.success(
             "插入素材",
-            f"已导入 {path.name}，共 {len(vps)} 段路径，已居中到页面。",
+            f"已导入 {path.name}，共 {len(vps)} 段路径，已居中到页面。"
+            "建议先检查右侧预览和页面尺寸，再决定是否导出或发送。",
             parent=self,
             position=InfoBarPosition.TOP,
         )
@@ -4024,7 +4213,8 @@ class MainWindowFluent(FluentWindow):
         self._update_status_line()
         InfoBar.success(
             "图片描摹",
-            f"已把图片转为 {len(vps)} 段路径并插入页面中心。",
+            f"已把图片转为 {len(vps)} 段路径并插入页面中心。"
+            "建议先检查轮廓是否过密、页面尺寸是否合适，再导出或发送。",
             parent=self,
             position=InfoBarPosition.TOP,
         )
@@ -4857,14 +5047,22 @@ class MainWindowFluent(FluentWindow):
         if hasattr(self, "_act_export_xlsx"):
             self._act_export_xlsx.setEnabled(can_xlsx)
             self._act_export_xlsx.setToolTip(
-                "当前来源为表格，可导出 XLSX。" if can_xlsx else f"XLSX 仅支持表格；当前来源：{content_label}。"
+                self._export_tooltip(
+                    kind="xlsx",
+                    content_label=content_label,
+                    enabled=can_xlsx,
+                    button=False,
+                )
             )
         if hasattr(self, "_act_export_pptx"):
             self._act_export_pptx.setEnabled(can_pptx)
             self._act_export_pptx.setToolTip(
-                "当前来源为演示，可导出 PPTX。"
-                if can_pptx
-                else f"PPTX 仅支持演示；当前来源：{content_label}。"
+                self._export_tooltip(
+                    kind="pptx",
+                    content_label=content_label,
+                    enabled=can_pptx,
+                    button=False,
+                )
             )
         if hasattr(self, "_act_export_md"):
             self._act_export_md.setEnabled(can_md)
@@ -4874,12 +5072,22 @@ class MainWindowFluent(FluentWindow):
         if hasattr(self, "_btn_export_xlsx"):
             self._btn_export_xlsx.setEnabled(can_xlsx)
             self._btn_export_xlsx.setToolTip(
-                "当前来源为表格，可导出 XLSX。" if can_xlsx else f"请先切到表格；当前来源：{content_label}。"
+                self._export_tooltip(
+                    kind="xlsx",
+                    content_label=content_label,
+                    enabled=can_xlsx,
+                    button=True,
+                )
             )
         if hasattr(self, "_btn_export_pptx"):
             self._btn_export_pptx.setEnabled(can_pptx)
             self._btn_export_pptx.setToolTip(
-                "当前来源为演示，可导出 PPTX。" if can_pptx else f"请先切到演示；当前来源：{content_label}。"
+                self._export_tooltip(
+                    kind="pptx",
+                    content_label=content_label,
+                    enabled=can_pptx,
+                    button=True,
+                )
             )
         if hasattr(self, "_btn_export_md"):
             self._btn_export_md.setEnabled(can_md)
@@ -4952,12 +5160,14 @@ class MainWindowFluent(FluentWindow):
         tooltip_parts: list[str] = []
         if glyph_hint.startswith("缺字形："):
             links.append(
-                '<a href="missing-glyphs" style="color:#217346;text-decoration:none;">查看缺失字符</a>'
+                '<a href="missing-glyphs" style="color:#217346;'
+                'text-decoration:none;">查看缺失字符</a>'
             )
             tooltip_parts.append("当前内容存在未覆盖字符，可先查看缺失字符。")
         if health_level in ("warn", "error"):
             links.append(
-                '<a href="preflight-report" style="color:#b06a12;text-decoration:none;">开始检查</a>'
+                '<a href="preflight-report" style="color:#b06a12;'
+                'text-decoration:none;">开始检查</a>'
             )
             tooltip_parts.append("当前状态建议先做导出/发送前检查。")
         if links:
@@ -5572,7 +5782,8 @@ class MainWindowFluent(FluentWindow):
         self._update_status_line()
         self._notify_success(
             "已导入",
-            f"{describe_document_kind(kind)} {p.name} 已载入到“{target_mode}”页。",
+            f"{describe_document_kind(kind)} {p.name} 已载入到“{target_mode}”页。"
+            f"{self._import_success_tip(kind, target_mode)}",
         )
 
     def _apply_loaded_paths(self, d: dict) -> None:
@@ -5651,11 +5862,18 @@ class MainWindowFluent(FluentWindow):
             0.05,
             self._cfg.page_width_mm / max(1, int(self._preview.viewport().width())),
         )
-        if str(getattr(self._cfg, "table_render_mode", "stroke") or "stroke").strip().lower() == "outline":
+        table_mode = str(
+            getattr(self._cfg, "table_render_mode", "stroke") or "stroke"
+        ).strip().lower()
+        if table_mode == "outline":
             text_paths = self._table_editor.to_outline_paths(mm_per_px)
         else:
             lines = self._table_editor.to_layout_lines(mm_per_px)
-            text_paths = map_document_lines(self._mapper, lines, mm_per_pt=float(self._cfg.mm_per_pt))
+            text_paths = map_document_lines(
+                self._mapper,
+                lines,
+                mm_per_pt=float(self._cfg.mm_per_pt),
+            )
         return list(text_paths) + list(self._table_editor.to_grid_paths())
 
     def _slides_paths(self) -> List[VectorPath]:
@@ -5665,7 +5883,10 @@ class MainWindowFluent(FluentWindow):
         def _mm_px(ed) -> float:
             return max(0.05, self._cfg.page_width_mm / max(1, ed.viewport().width()))
 
-        if str(getattr(self._cfg, "slides_render_mode", "stroke") or "stroke").strip().lower() == "outline":
+        slides_mode = str(
+            getattr(self._cfg, "slides_render_mode", "stroke") or "stroke"
+        ).strip().lower()
+        if slides_mode == "outline":
             return self._presentation_editor.to_outline_paths_all_slides(mm_per_px_resolver=_mm_px)
         lines = self._presentation_editor.to_layout_lines_all_slides(mm_per_px_resolver=_mm_px)
         return map_document_lines(self._mapper, lines, mm_per_pt=mm_per_pt)
@@ -5819,7 +6040,10 @@ class MainWindowFluent(FluentWindow):
         a_paste = Action(text="粘贴幻灯片")
         a_paste.setToolTip("在当前页后插入剪贴板中的整页")
         a_paste.triggered.connect(self._presentation_editor.paste_slide_from_internal_clipboard)
-        a_paste.setEnabled(bool(getattr(self._presentation_editor, "_internal_slide_clipboard", None)))
+        has_slide_clipboard = bool(
+            getattr(self._presentation_editor, "_internal_slide_clipboard", None)
+        )
+        a_paste.setEnabled(has_slide_clipboard)
         m.addAction(a_paste)
         m.addSeparator()
         a_del = Action(text="删除当前页")
@@ -6381,32 +6605,23 @@ class MainWindowFluent(FluentWindow):
 
     def _apply_render_modes(self, data: dict | None) -> None:
         data = data if isinstance(data, dict) else {}
-        word_mode = str(data.get("word", getattr(self._cfg, "word_render_mode", "stroke")) or "stroke")
-        table_mode = str(data.get("table", getattr(self._cfg, "table_render_mode", "stroke")) or "stroke")
-        slides_mode = str(data.get("slides", getattr(self._cfg, "slides_render_mode", "stroke")) or "stroke")
-        self._cfg.word_render_mode = "outline" if word_mode == "outline" else "stroke"
-        self._cfg.table_render_mode = "outline" if table_mode == "outline" else "stroke"
-        self._cfg.slides_render_mode = "outline" if slides_mode == "outline" else "stroke"
+        word_mode = self._normalize_render_mode(
+            data.get("word", getattr(self._cfg, "word_render_mode", "stroke"))
+        )
+        table_mode = self._normalize_render_mode(
+            data.get("table", getattr(self._cfg, "table_render_mode", "stroke"))
+        )
+        slides_mode = self._normalize_render_mode(
+            data.get("slides", getattr(self._cfg, "slides_render_mode", "stroke"))
+        )
+        self._cfg.word_render_mode = word_mode
+        self._cfg.table_render_mode = table_mode
+        self._cfg.slides_render_mode = slides_mode
         if hasattr(self, "_word_editor"):
             self._word_editor.set_render_mode(self._cfg.word_render_mode)
-        if hasattr(self, "_word_render_mode_combo"):
-            idx = self._word_render_mode_combo.findData(self._cfg.word_render_mode)
-            if idx >= 0 and self._word_render_mode_combo.currentIndex() != idx:
-                self._word_render_mode_combo.blockSignals(True)
-                self._word_render_mode_combo.setCurrentIndex(idx)
-                self._word_render_mode_combo.blockSignals(False)
-        if hasattr(self, "_table_render_mode_combo"):
-            idx = self._table_render_mode_combo.findData(self._cfg.table_render_mode)
-            if idx >= 0 and self._table_render_mode_combo.currentIndex() != idx:
-                self._table_render_mode_combo.blockSignals(True)
-                self._table_render_mode_combo.setCurrentIndex(idx)
-                self._table_render_mode_combo.blockSignals(False)
-        if hasattr(self, "_slides_render_mode_combo"):
-            idx = self._slides_render_mode_combo.findData(self._cfg.slides_render_mode)
-            if idx >= 0 and self._slides_render_mode_combo.currentIndex() != idx:
-                self._slides_render_mode_combo.blockSignals(True)
-                self._slides_render_mode_combo.setCurrentIndex(idx)
-                self._slides_render_mode_combo.blockSignals(False)
+        self._sync_render_mode_combo("_word_render_mode_combo", self._cfg.word_render_mode)
+        self._sync_render_mode_combo("_table_render_mode_combo", self._cfg.table_render_mode)
+        self._sync_render_mode_combo("_slides_render_mode_combo", self._cfg.slides_render_mode)
 
     # ---------- 导出（占位） ----------
     def _export_gcode_to_file_stub(self) -> None:
@@ -6470,8 +6685,7 @@ class MainWindowFluent(FluentWindow):
             self._log_event("导出", f"DOCX 导出异常：{e}", level="ERROR")
             self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
             return
-        self._log_event("导出", f"DOCX 已导出到 {Path(path).name}")
-        self._notify_success("已导出", f"DOCX 已生成：{Path(path).name}。{self._office_export_tip('DOCX')}")
+        self._notify_office_export_success("DOCX", Path(path))
 
     def _export_xlsx(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -6497,8 +6711,7 @@ class MainWindowFluent(FluentWindow):
             self._log_event("导出", f"XLSX 导出异常：{e}", level="ERROR")
             self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
             return
-        self._log_event("导出", f"XLSX 已导出到 {Path(path).name}")
-        self._notify_success("已导出", f"XLSX 已生成：{Path(path).name}。{self._office_export_tip('XLSX')}")
+        self._notify_office_export_success("XLSX", Path(path))
 
     def _export_pptx(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -6529,8 +6742,7 @@ class MainWindowFluent(FluentWindow):
             self._log_event("导出", f"PPTX 导出异常：{e}", level="ERROR")
             self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
             return
-        self._log_event("导出", f"PPTX 已导出到 {Path(path).name}")
-        self._notify_success("已导出", f"PPTX 已生成：{Path(path).name}。{self._office_export_tip('PPTX')}")
+        self._notify_office_export_success("PPTX", Path(path))
 
     def _slides_plain_to_markdown(self) -> str:
         parts: list[str] = []
@@ -6584,7 +6796,10 @@ class MainWindowFluent(FluentWindow):
             return [DocParagraph(runs=[DocRun(text=ln)]) for ln in raw], None
         if name == "slides":
             return self._slides_docx_paragraphs(), None
-        return self._docx_paragraphs_from_editor_widget(self._word_editor), self._word_editor.toHtml()
+        return (
+            self._docx_paragraphs_from_editor_widget(self._word_editor),
+            self._word_editor.toHtml(),
+        )
 
     def _require_export_source(self, expected_pid: str, target_name: str) -> None:
         """限制格式专属导出入口只作用于对应内容源。"""
@@ -6630,8 +6845,7 @@ class MainWindowFluent(FluentWindow):
             self._log_event("导出", f"Markdown 导出失败：{e}", level="ERROR")
             self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
             return
-        self._log_event("导出", f"Markdown 已导出到 {Path(path).name}")
-        self._notify_success("已导出", f"Markdown 已生成：{Path(path).name}。{self._office_export_tip('Markdown')}")
+        self._notify_office_export_success("Markdown", Path(path))
 
     def _docx_paragraphs_from_editor_widget(self, ed) -> List[DocParagraph]:  # noqa: ANN001
         """高保真（基础）：从 QTextDocument 抽取段落与字符级样式。"""
@@ -6690,7 +6904,8 @@ class MainWindowFluent(FluentWindow):
         return paras
 
     def _docx_paragraphs_from_editor(self) -> List[DocParagraph]:
-        return self._docx_paragraphs_from_editor_widget(self._active_text_edit() or self._word_editor)
+        editor = self._active_text_edit() or self._word_editor
+        return self._docx_paragraphs_from_editor_widget(editor)
 
     def _soffice_ready_hint(self) -> str:
         if has_soffice():
@@ -6736,10 +6951,9 @@ class MainWindowFluent(FluentWindow):
             self._btn_send.setEnabled(False)
             self._btn_send_pause_m800.setEnabled(False)
             self._btn_send_checkpoint.setEnabled(False)
-            self._btn_send_resume.setEnabled(False)
             self._btn_paper_flow.setEnabled(False)
             self._btn_reset.setEnabled(False)
-            self._pending_program_after_m800 = None
+            self._set_pending_resume_program(None)
             self._set_job_status("就绪", 0, 0)
             self._log_event("设备", "已断开设备连接")
             self._update_action_states()
@@ -6795,6 +7009,7 @@ class MainWindowFluent(FluentWindow):
             self._btn_send.setEnabled(True)
             self._btn_send_pause_m800.setEnabled(True)
             self._btn_send_checkpoint.setEnabled(False)
+            self._set_pending_resume_program(None)
             self._btn_paper_flow.setEnabled(True)
             self._btn_reset.setEnabled(True)
             self._set_job_status("就绪", 0, 0)
@@ -6877,8 +7092,13 @@ class MainWindowFluent(FluentWindow):
             for ln in pre_lines:
                 self._grbl.send_line_sync(ln)
             self._grbl.send_line_sync("M800")
-            self._pending_program_after_m800 = list(suf_lines)
-            self._btn_send_resume.setEnabled(bool(suf_lines))
+            self._set_pending_resume_program(list(suf_lines))
+            self._set_job_status(
+                "等待继续",
+                len(pre_lines) + 1,
+                len(pre_lines) + 1 + len(suf_lines),
+            )
+            self._log_event("发送", f"换纸流程已暂停，剩余 {len(suf_lines)} 行待继续")
             InfoBar.warning(
                 "换纸流程",
                 "已发送前缀与 M800（到达流程节点）。"
@@ -6887,8 +7107,7 @@ class MainWindowFluent(FluentWindow):
                 position=InfoBarPosition.TOP,
             )
         except Exception as e:
-            self._pending_program_after_m800 = None
-            self._btn_send_resume.setEnabled(False)
+            self._set_pending_resume_program(None)
             self._log_append(f"[错误] 换纸流程失败: {e}")
             InfoBar.error("换纸流程失败", str(e), parent=self, position=InfoBarPosition.TOP)
 
@@ -7134,7 +7353,10 @@ class MainWindowFluent(FluentWindow):
             remaining = len(self._grbl.remaining_program_lines_from_checkpoint())
             self._btn_send_checkpoint.setEnabled(self._grbl.can_resume_from_checkpoint)
             if self._grbl.can_resume_from_checkpoint:
-                self._log_event("发送", f"已确认 {e.acked_count or 0} 行，剩余 {remaining} 行可续发")
+                self._log_event(
+                    "发送",
+                    f"已确认 {e.acked_count or 0} 行，剩余 {remaining} 行可续发",
+                )
             InfoBar.error("GRBL 发送失败", str(e), parent=self, position=InfoBarPosition.TOP)
         except Exception as e:
             self._log_event("发送", f"发送异常：{e}", level="ERROR")
@@ -7145,6 +7367,8 @@ class MainWindowFluent(FluentWindow):
             self._btn_send_checkpoint.setEnabled(False)
             if not self._grbl:
                 self._notify_error("断点续发失败", "当前未连接设备。")
+            else:
+                self._notify_info("断点续发", "当前没有可续发的断点程序。")
             return
         remaining = self._grbl.remaining_program_lines_from_checkpoint()
         if not self._confirm_dangerous_action(
@@ -7186,8 +7410,10 @@ class MainWindowFluent(FluentWindow):
             return
         try:
             self._grbl.soft_reset()
+            self._btn_send_checkpoint.setEnabled(False)
+            self._set_pending_resume_program(None)
             self._set_job_status("已复位", 0, 0)
-            self._log_append("已发送软复位 Ctrl+X")
+            self._log_event("发送", "已发送软复位 Ctrl+X")
             InfoBar.success("软复位", "已发送 Ctrl+X", parent=self, position=InfoBarPosition.TOP)
         except Exception as e:
             InfoBar.error("软复位失败", str(e), parent=self, position=InfoBarPosition.TOP)
@@ -7198,9 +7424,11 @@ class MainWindowFluent(FluentWindow):
             self._notify_error("发送失败", "请先连接设备，再发送当前 G-code。")
             return
         self._sync_device_machine_widgets_to_cfg()
+        self._log_event("发送", "开始发送当前 G-code（遇 M800 暂停）", level="INFO")
         try:
             paths = self._current_work_paths_checked()
         except ValueError as e:
+            self._log_event("发送", f"发送前检查失败：{e}", level="ERROR")
             self._notify_error("发送失败", str(e))
             return
         if not self._confirm_dangerous_action(
@@ -7211,7 +7439,7 @@ class MainWindowFluent(FluentWindow):
             "且你已准备好“换纸/人工处理”。\n继续吗？",
         ):
             return
-        self._pending_program_after_m800 = None
+        self._set_pending_resume_program(None)
         g = paths_to_gcode(paths, self._cfg, order=False)
         from inkscape_wps.core.grbl import executable_gcode_lines
 
@@ -7224,6 +7452,7 @@ class MainWindowFluent(FluentWindow):
                 break
         if idx is None:
             # 没有 M800：就正常发送
+            self._log_event("发送", "当前程序不含 M800，改为直接发送全部 G-code")
             self._send_gcode()
             return
         before = lines[: idx + 1]
@@ -7231,8 +7460,9 @@ class MainWindowFluent(FluentWindow):
         try:
             for ln in before:
                 self._grbl.send_line_sync(ln)
-            self._pending_program_after_m800 = list(after)
-            self._btn_send_resume.setEnabled(bool(after))
+            self._set_pending_resume_program(list(after))
+            self._set_job_status("等待继续", len(before), len(lines))
+            self._log_event("发送", f"已发送到 M800，剩余 {len(after)} 行待继续")
             InfoBar.warning(
                 "已到 M800 节点",
                 "已发送到 M800（到达流程节点）。完成换纸/人工处理后点“继续（从 M800 后）”。",
@@ -7240,17 +7470,18 @@ class MainWindowFluent(FluentWindow):
                 position=InfoBarPosition.TOP,
             )
         except Exception as e:
-            self._pending_program_after_m800 = None
-            self._btn_send_resume.setEnabled(False)
+            self._set_pending_resume_program(None)
             self._log_append(f"[错误] 发送到 M800 失败: {e}")
             InfoBar.error("发送失败", str(e), parent=self, position=InfoBarPosition.TOP)
 
     def _resume_after_m800(self) -> None:
         if not self._grbl:
+            self._notify_error("继续失败", "当前未连接设备。")
             return
         after = self._pending_program_after_m800 or []
         if not after:
-            self._btn_send_resume.setEnabled(False)
+            self._set_pending_resume_program(None)
+            self._notify_info("继续发送", "当前没有待续发的 M800 后程序。")
             return
         if not self._confirm_dangerous_action(
             "继续发送（从 M800 后）",
@@ -7259,8 +7490,13 @@ class MainWindowFluent(FluentWindow):
         ):
             return
         try:
-            for ln in after:
+            self._log_event("发送", f"开始继续发送 M800 后程序，剩余 {len(after)} 行", level="INFO")
+            self._set_job_status("继续发送", 0, len(after))
+            for idx, ln in enumerate(after, start=1):
                 self._grbl.send_line_sync(ln)
+            self._set_pending_resume_program(None)
+            self._set_job_status("已完成", len(after), len(after))
+            self._log_event("发送", f"M800 后程序已继续完成，共 {len(after)} 行")
             self._log_append(f"已继续发送 {len(after)} 行")
             InfoBar.success(
                 "继续完成",
@@ -7269,11 +7505,19 @@ class MainWindowFluent(FluentWindow):
                 position=InfoBarPosition.TOP,
             )
         except Exception as e:
+            self._set_pending_resume_program(list(after[idx:]))
+            self._set_job_status("继续中断", idx - 1, len(after))
+            self._log_event(
+                "发送",
+                f"M800 后继续发送失败：已发送 {idx - 1} 行，剩余 {len(after) - idx + 1} 行",
+                level="ERROR",
+            )
             self._log_append(f"[错误] 继续发送失败: {e}")
+            self._notify_warning(
+                "继续中断",
+                f"已发送 {idx - 1} 行，剩余 {len(after) - idx + 1} 行，可继续重试。",
+            )
             InfoBar.error("继续失败", str(e), parent=self, position=InfoBarPosition.TOP)
-        finally:
-            self._pending_program_after_m800 = None
-            self._btn_send_resume.setEnabled(False)
 
 
 class _PreviewView(QGraphicsView):

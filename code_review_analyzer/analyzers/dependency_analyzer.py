@@ -2,9 +2,9 @@
 
 import re
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List
 
-from ..models import Issue, IssueSeverity, IssueCategory, AnalysisResult
+from ..models import AnalysisResult, Issue, IssueCategory, IssueSeverity
 from .base_analyzer import BaseAnalyzer
 
 
@@ -59,11 +59,16 @@ class DependencyAnalyzer(BaseAnalyzer):
                         for dep in deps:
                             self._parse_dependency_string(dep, is_optional=True, feature=feature)
         
-        except Exception as e:
+        except Exception:
             # 如果解析失败，尝试使用正则表达式
             self._parse_pyproject_regex(pyproject_file)
     
-    def _parse_dependency_string(self, dep_string: str, is_optional: bool = False, feature: str = None) -> None:
+    def _parse_dependency_string(
+        self,
+        dep_string: str,
+        is_optional: bool = False,
+        feature: str = None,
+    ) -> None:
         """解析依赖字符串"""
         # 提取包名和版本
         match = re.match(r'([a-zA-Z0-9\-_.]+)\s*([><=!~]*.*)?', dep_string.strip())
@@ -172,8 +177,6 @@ class DependencyAnalyzer(BaseAnalyzer):
         """
         if package not in self.dependencies:
             return False
-        
-        installed_version = self.dependencies[package]
         
         # 简单的版本比较（实际应使用 packaging 库）
         # 这里只做基本的检查

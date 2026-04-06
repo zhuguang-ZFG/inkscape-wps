@@ -16,7 +16,10 @@ except ImportError:  # pragma: no cover
 from inkscape_wps.core.config import MachineConfig
 from inkscape_wps.core.gcode import paths_to_gcode
 from inkscape_wps.core.hershey import HersheyFontMapper, map_document_lines
-from inkscape_wps.ui.presentation_editor_pyqt5 import WpsPresentationEditorPyQt5, _slide_plain_preview
+from inkscape_wps.ui.presentation_editor_pyqt5 import (
+    WpsPresentationEditorPyQt5,
+    _slide_plain_preview,
+)
 
 
 @unittest.skipUnless(QApplication is not None, "PyQt5 不可用")

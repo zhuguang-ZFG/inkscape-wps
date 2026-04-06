@@ -1,14 +1,18 @@
 PYTHON ?= python3
 
-.PHONY: verify verify-strict test test-unittest lint typecheck ci
+.PHONY: install install-dev verify verify-strict test test-unittest lint typecheck bundle ci
+
+install:
+	$(PYTHON) -m pip install -e .
+
+install-dev:
+	$(PYTHON) -m pip install -r requirements-dev.txt
 
 verify:
 	$(PYTHON) tools/verify.py --report-json logs/verify-report.json
 
 verify-strict:
 	$(PYTHON) tools/verify.py --strict-tools --report-json logs/verify-report.json
-
-ci: verify-strict
 
 test:
 	$(PYTHON) -m pytest -q
@@ -21,3 +25,8 @@ lint:
 
 typecheck:
 	$(PYTHON) -m mypy
+
+bundle:
+	$(PYTHON) -m PyInstaller packaging/inkscape_wps.spec --noconfirm
+
+ci: verify-strict
