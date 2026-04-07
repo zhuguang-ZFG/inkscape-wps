@@ -44,3 +44,26 @@ def test_load_old_file_fallback_plain_text(tmp_path: Path):
     d = load_project_file(p)
     assert d["word_plain_text"] == "Hello\nWorld"
     assert d["render_modes"] == {}
+
+
+def test_load_project_file_with_utf8_bom(tmp_path: Path):
+    p = tmp_path / "bom.inkwps.json"
+    p.write_text(
+        "\ufeff"
+        + json.dumps(
+            {
+                "format": FORMAT_ID,
+                "version": FORMAT_VERSION,
+                "title": "bom",
+                "word_html": "<p>Hi</p>",
+                "table": {},
+                "slides": [],
+                "sketch": {},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    d = load_project_file(p)
+    assert d["title"] == "bom"
+    assert d["word_plain_text"] == "Hi"

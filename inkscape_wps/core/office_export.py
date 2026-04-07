@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .project_io import write_text_atomic
+
 
 class OfficeExportError(RuntimeError):
     pass
@@ -250,5 +252,4 @@ def export_pptx(path: Path, *, slides: List[str], prefer_soffice: bool = False) 
 
 def export_markdown(path: Path, *, body: str) -> None:
     """写入 UTF-8 Markdown 文本（无第三方依赖）。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(body if body else "", encoding="utf-8")
+    write_text_atomic(path, body if body else "", encoding="utf-8")

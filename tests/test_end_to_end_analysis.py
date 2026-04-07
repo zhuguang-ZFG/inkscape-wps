@@ -148,7 +148,7 @@ def test_save_report(project_with_issues, tmp_path):
     coordinator.save_report(output_file)
     
     assert output_file.exists()
-    content = output_file.read_text()
+    content = output_file.read_text(encoding="utf-8")
     assert len(content) > 0
     assert "inkscape_wps 代码审查分析报告" in content
 
@@ -162,7 +162,7 @@ def test_save_html_report(project_with_issues, tmp_path):
     coordinator.save_report(output_file, report_format="html")
 
     assert output_file.exists()
-    content = output_file.read_text()
+    content = output_file.read_text(encoding="utf-8")
     assert "<!DOCTYPE html>" in content
     assert "<html" in content
 

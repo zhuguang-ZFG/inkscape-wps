@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .document_file_service import DocumentFileService, ImportedDocument
+from .document_export_service import DocumentExportService, ExportSupportState
 from .font_service import FontService
 from .gcode_service import GCodeService
 from .preview_service import PreviewService
@@ -13,5 +15,9 @@ __all__ = [
     'SerialService',
     'GCodeService',
     'FontService',
-    'PreviewService'
+    'PreviewService',
+    'DocumentFileService',
+    'ImportedDocument',
+    'DocumentExportService',
+    'ExportSupportState',
 ]

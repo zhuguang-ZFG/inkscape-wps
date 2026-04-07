@@ -21,6 +21,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .project_io import read_text_with_fallback
+
 
 class OfficeImportError(RuntimeError):
     pass
@@ -337,7 +339,9 @@ def import_markdown_string_to_plain(text: str) -> str:
 def import_markdown_to_plain(path: Path) -> str:
     """读取 .md 文件并 `import_markdown_string_to_plain`。"""
     fp = _require_import_file(Path(path))
-    return import_markdown_string_to_plain(fp.read_text(encoding="utf-8", errors="replace"))
+    return import_markdown_string_to_plain(
+        read_text_with_fallback(fp, fallback_to_locale=True, errors="replace")
+    )
 
 
 _MD_SLIDE_SPLIT = re.compile(r"^\s*---\s*$", re.MULTILINE)
@@ -372,7 +376,7 @@ def split_markdown_into_slides(raw: str) -> Optional[List[str]]:
 def import_markdown_file_to_slides_plain(path: Path) -> Optional[List[str]]:
     """若文件含 --- 分页则返回每页纯文本列表，否则 None。"""
     fp = _require_import_file(Path(path))
-    raw = fp.read_text(encoding="utf-8", errors="replace")
+    raw = read_text_with_fallback(fp, fallback_to_locale=True, errors="replace")
     chunks = split_markdown_into_slides(raw)
     if chunks is None:
         return None

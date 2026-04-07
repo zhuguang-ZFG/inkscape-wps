@@ -40,6 +40,18 @@ class TestMarkdownIo(unittest.TestCase):
         self.assertIn("Bold", plain)
         self.assertIn("text", plain)
 
+    def test_import_markdown_file_with_utf8_bom(self) -> None:
+        try:
+            import markdown  # noqa: F401
+        except ImportError:
+            self.skipTest("markdown 未安装")
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "bom.md"
+            p.write_text("\ufeff# 标题\n\n内容\n", encoding="utf-8")
+            plain = import_markdown_to_plain(p)
+        self.assertIn("标题", plain)
+        self.assertIn("内容", plain)
+
     def test_split_slides(self) -> None:
         raw = "# A\n\nx\n\n---\n\n# B\n"
         parts = split_markdown_into_slides(raw)

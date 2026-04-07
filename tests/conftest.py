@@ -59,7 +59,7 @@ class SampleClass:
         return self.value
 '''
     
-    filepath.write_text(code)
+    filepath.write_text(code, encoding="utf-8")
     return filepath
 
 

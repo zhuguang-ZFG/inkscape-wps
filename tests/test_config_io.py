@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -43,6 +44,18 @@ class TestConfigIo(unittest.TestCase):
             self.assertEqual(loaded.connection_mode, "tcp")
             self.assertEqual(loaded.tcp_host, "192.168.4.1")
             self.assertEqual(loaded.tcp_port, 23)
+
+    def test_json_load_with_utf8_bom(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            path = d / "machine_config.json"
+            path.write_text(
+                "\ufeff" + json.dumps({"gcode_pen_mode": "m3m5", "gcode_m3_s_value": 321}),
+                encoding="utf-8",
+            )
+            loaded, _ = load_machine_config(d)
+            self.assertEqual(loaded.gcode_pen_mode, "m3m5")
+            self.assertEqual(loaded.gcode_m3_s_value, 321)
 
 
 if __name__ == "__main__":

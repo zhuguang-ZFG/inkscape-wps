@@ -16,6 +16,7 @@ except ImportError:
 import tomli_w
 
 from .grbl_firmware_ref import GRBL_ESP32_DEFAULT_RX_BUFFER_SIZE
+from .project_io import read_text_with_fallback, write_text_atomic
 
 _log = logging.getLogger(__name__)
 
@@ -104,15 +105,15 @@ class MachineConfig:
         return cls(**filtered)
 
     def save_json(self, path: Path) -> None:
-        path.write_text(json.dumps(self.to_json_dict(), indent=2), encoding="utf-8")
+        write_text_atomic(path, json.dumps(self.to_json_dict(), indent=2), encoding="utf-8")
 
     @classmethod
     def load_json(cls, path: Path) -> MachineConfig:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_text_with_fallback(path, fallback_to_locale=True))
         return cls.from_json_dict(data)
 
     def save_toml(self, path: Path) -> None:
-        path.write_text(tomli_w.dumps(self.to_json_dict()), encoding="utf-8")
+        write_text_atomic(path, tomli_w.dumps(self.to_json_dict()), encoding="utf-8")
 
     @classmethod
     def load_toml(cls, path: Path) -> MachineConfig:

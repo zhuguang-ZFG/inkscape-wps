@@ -539,5 +539,50 @@ class TestFluentContextAndUndoRegression(unittest.TestCase):
         self.assertIn('self._log_event("发送", "开始发送当前 G-code", level="INFO")', code)
 
 
+    def test_content_inspection_context_is_shared_by_preflight_health_and_workflow(self) -> None:
+        code = Path("inkscape_wps/ui/main_window_fluent.py").read_text(encoding="utf-8")
+        self.assertIn("def _content_inspection_context(", code)
+        self.assertIn(") -> tuple[str, str, str, List[str], List[VectorPath]]:", code)
+        self.assertEqual(code.count("self._content_inspection_context()"), 3)
+
+    def test_status_line_content_context_is_shared_before_rendering_status_bar(self) -> None:
+        code = Path("inkscape_wps/ui/main_window_fluent.py").read_text(encoding="utf-8")
+        self.assertIn("def _status_line_content_context(self) -> tuple[str, str, str]:", code)
+        self.assertIn(
+            "content_pid, content_label, content_extra = self._status_line_content_context()",
+            code,
+        )
+
+    def test_current_content_context_is_shared_by_workflow_dialog_and_job_summary(self) -> None:
+        code = Path("inkscape_wps/ui/main_window_fluent.py").read_text(encoding="utf-8")
+        self.assertIn("def _current_content_context(self) -> tuple[str, str]:", code)
+        self.assertGreaterEqual(code.count("self._current_content_context()"), 3)
+
+    def test_glyph_inspection_context_is_shared_by_hint_list_and_dialog(self) -> None:
+        code = Path("inkscape_wps/ui/main_window_fluent.py").read_text(encoding="utf-8")
+        self.assertIn("def _glyph_inspection_context(self, pid: str) -> tuple[str, List[str]]:", code)
+        self.assertGreaterEqual(code.count("self._glyph_inspection_context(pid)"), 3)
+
+    def test_current_glyph_inspection_context_is_shared_by_font_diagnostics_and_dialog(self) -> None:
+        code = Path("inkscape_wps/ui/main_window_fluent.py").read_text(encoding="utf-8")
+        self.assertIn(
+            "def _current_glyph_inspection_context(self) -> tuple[str, str, str, List[str]]:",
+            code,
+        )
+        self.assertGreaterEqual(code.count("self._current_glyph_inspection_context()"), 2)
+
+    def test_current_render_mode_summary_is_shared_by_preflight_and_job_summary(self) -> None:
+        code = Path("inkscape_wps/ui/main_window_fluent.py").read_text(encoding="utf-8")
+        self.assertIn("def _current_render_mode_summary(self, pid: str, source: str) -> str:", code)
+        self.assertGreaterEqual(code.count("self._current_render_mode_summary(pid, source)"), 2)
+
+    def test_top_nav_pages_are_initialized_before_build_pages_runs(self) -> None:
+        code = Path("inkscape_wps/ui/main_window_fluent.py").read_text(encoding="utf-8")
+        self.assertIn("self._home_page: QWidget | None = None", code)
+        self.assertIn("self._word_page: QWidget | None = None", code)
+        self.assertIn("self._table_page: QWidget | None = None", code)
+        self.assertIn("self._slides_page: QWidget | None = None", code)
+
+
 if __name__ == "__main__":
     unittest.main()

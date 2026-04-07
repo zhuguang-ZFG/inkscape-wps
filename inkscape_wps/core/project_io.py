@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import locale
 import os
 import tempfile
 from pathlib import Path
@@ -15,6 +16,35 @@ from inkscape_wps.core.types import Point, VectorPath
 
 FORMAT_ID = "inkscape-wps-project"
 FORMAT_VERSION = 2
+
+
+def read_text_with_fallback(
+    path: Path | str,
+    *,
+    fallback_to_locale: bool = False,
+    errors: str = "strict",
+) -> str:
+    """Read text with BOM support and an optional locale fallback."""
+    fp = Path(path)
+    encodings = ["utf-8-sig", "utf-8"]
+    if fallback_to_locale:
+        encodings.append(locale.getpreferredencoding(False))
+
+    tried: set[str] = set()
+    last_error: UnicodeError | OSError | None = None
+    for encoding in encodings:
+        normalized = (encoding or "").strip()
+        if not normalized or normalized in tried:
+            continue
+        tried.add(normalized)
+        try:
+            return fp.read_text(encoding=normalized, errors=errors)
+        except (UnicodeError, OSError) as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    return fp.read_text(encoding="utf-8", errors=errors)
 
 
 def validate_project_header(d: Dict[str, Any]) -> None:
@@ -114,7 +144,7 @@ def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> Non
 
 
 def load_project_file(path: Path | str) -> Dict[str, Any]:
-    raw = Path(path).read_text(encoding="utf-8")
+    raw = read_text_with_fallback(path, fallback_to_locale=True)
     d = json.loads(raw)
     if not isinstance(d, dict):
         raise ValueError("工程文件格式错误")

@@ -1,4 +1,4 @@
-"""Fluent UI 主窗口（PyQt5 + qfluentwidgets）。
+﻿"""Fluent UI 主窗口（PyQt5 + qfluentwidgets）。
 
 说明：
 - 仅本机使用：依赖 PyQt-Fluent-Widgets（GPL-3.0）与 PyQt5。
@@ -14,7 +14,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from PyQt5.QtCore import QEvent, QPoint, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import (
@@ -103,21 +103,10 @@ from inkscape_wps.core.office_export import (
     DocParagraph,
     DocRun,
     OfficeExportError,
-    export_docx,
-    export_markdown,
-    export_pptx,
-    export_xlsx,
-    has_soffice,
 )
 from inkscape_wps.core.office_import import (
     OfficeImportError,
     detect_office_kind,
-    import_docx_to_html,
-    import_markdown_file_to_slides_plain,
-    import_markdown_to_plain,
-    import_pptx_to_slides,
-    import_xlsx_to_table_blob,
-    try_convert_wps_private_to_office,
 )
 from inkscape_wps.core.project_io import (
     deserialize_vector_paths,
@@ -128,6 +117,8 @@ from inkscape_wps.core.project_io import (
 )
 from inkscape_wps.core.raster_trace import trace_image_to_svg
 from inkscape_wps.core.serial_discovery import filter_ports, list_port_infos
+from inkscape_wps.core.services.document_export_service import DocumentExportService
+from inkscape_wps.core.services.document_file_service import DocumentFileService
 from inkscape_wps.core.svg_import import vector_paths_from_svg_file, vector_paths_from_svg_string
 from inkscape_wps.core.transport import TcpTextStream
 from inkscape_wps.core.types import Point, VectorPath, paths_bounding_box
@@ -176,6 +167,8 @@ class MainWindowFluent(FluentWindow):
             kuixiang_mm_per_unit=self._cfg.kuixiang_mm_per_unit,
         )
         self._mapper.preload_background()
+        self._document_file_service = DocumentFileService()
+        self._document_export_service = DocumentExportService()
 
         self._doc_title = "未命名文档"
         self._project_path: Optional[Path] = None
@@ -203,6 +196,11 @@ class MainWindowFluent(FluentWindow):
         self._top_nav_buttons: List[tuple[QPushButton, QWidget]] = []
         self._top_nav_titles: List[QLabel] = []
         self._top_nav_meta_labels: List[QLabel] = []
+        self._home_page: QWidget | None = None
+        self._word_page: QWidget | None = None
+        self._table_page: QWidget | None = None
+        self._slides_page: QWidget | None = None
+        self._presentation_editor: WpsPresentationEditorPyQt5 | None = None
         self._device_page: QWidget | None = None
         self._help_page: QWidget | None = None
 
@@ -297,17 +295,18 @@ class MainWindowFluent(FluentWindow):
 
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001, N802
         """演示页：修订模式下拦截 Backspace/Delete；获得焦点时刷新撤销/重做菜单状态。"""
-        if obj is self._presentation_editor.slide_editor() and event.type() == QEvent.KeyPress:
-            if self._slide_revision_mode and isinstance(event, QKeyEvent):
-                try:
-                    if self._slide_revision_handle_delete(event):
-                        return True
-                except Exception:
-                    _logger.debug("演示修订模式处理按键失败", exc_info=True)
-        if event.type() == QEvent.FocusIn and obj is self._presentation_editor.slide_editor():
-            QTimer.singleShot(0, self._refresh_undo_redo_menu_state)
-        if event.type() == QEvent.FocusIn and obj is self._presentation_editor.slide_list_widget():
-            QTimer.singleShot(0, self._refresh_undo_redo_menu_state)
+        if hasattr(self, "_presentation_editor") and self._presentation_editor is not None:
+            if obj is self._presentation_editor.slide_editor() and event.type() == QEvent.KeyPress:
+                if self._slide_revision_mode and isinstance(event, QKeyEvent):
+                    try:
+                        if self._slide_revision_handle_delete(event):
+                            return True
+                    except Exception:
+                        _logger.debug("演示修订模式处理按键失败", exc_info=True)
+            if event.type() == QEvent.FocusIn and obj is self._presentation_editor.slide_editor():
+                QTimer.singleShot(0, self._refresh_undo_redo_menu_state)
+            if event.type() == QEvent.FocusIn and obj is self._presentation_editor.slide_list_widget():
+                QTimer.singleShot(0, self._refresh_undo_redo_menu_state)
         try:
             return super().eventFilter(obj, event)
         except Exception:
@@ -355,6 +354,81 @@ class MainWindowFluent(FluentWindow):
             )
         except Exception:
             pass
+        self.setStyleSheet(
+            """
+            QWidget#home,
+            QWidget#file,
+            QWidget#WordWorkspace {
+                background: transparent;
+            }
+            QFrame#WpsTopNavInfo,
+            QWidget#homeActionPanel,
+            QFrame#homeQuickCard,
+            QFrame#helpActionCard,
+            QWidget#WordWorkspacePaper,
+            QWidget#WordWorkspaceHeader {
+                background-color: rgba(255, 255, 255, 0.94);
+                border: 1px solid #dbe4eb;
+                border-radius: 16px;
+            }
+            QWidget#WordWorkspaceHeader {
+                background-color: rgba(246, 249, 251, 0.98);
+            }
+            QWidget#WordWorkspacePaper {
+                border-radius: 18px;
+            }
+            QLabel#WpsSectionEyebrow {
+                color: #217346;
+                background: #e9f5ee;
+                border: 1px solid #d3eadb;
+                border-radius: 999px;
+                padding: 4px 10px;
+                font-size: 11px;
+                font-weight: 700;
+            }
+            QLabel#WpsMutedCaption {
+                color: #66727e;
+                font-size: 12px;
+                line-height: 1.45;
+            }
+            QLineEdit,
+            QPlainTextEdit,
+            QTextEdit,
+            QComboBox,
+            QDoubleSpinBox {
+                background: rgba(255, 255, 255, 0.98);
+                border: 1px solid #d7e0e8;
+                border-radius: 10px;
+                padding: 6px 10px;
+                selection-background-color: #d8efe2;
+            }
+            QLineEdit:focus,
+            QPlainTextEdit:focus,
+            QTextEdit:focus,
+            QComboBox:focus,
+            QDoubleSpinBox:focus {
+                border: 1px solid #2d8f5c;
+            }
+            QSplitter::handle {
+                background: transparent;
+                width: 10px;
+                height: 10px;
+            }
+            QScrollArea {
+                border: none;
+                background: transparent;
+            }
+            """
+        )
+
+    def _apply_card_shadow(
+        self, widget: QWidget, *, blur: int = 28, offset_y: int = 10, alpha: int = 22
+    ) -> None:
+        shadow = QGraphicsDropShadowEffect(widget)
+        shadow.setBlurRadius(blur)
+        shadow.setOffset(0, offset_y)
+        shadow.setColor(QColor(24, 39, 52, alpha))
+        widget.setGraphicsEffect(shadow)
 
     def _register_device_setting_group(self, gb: QGroupBox) -> None:
         self._device_setting_groups.append(gb)
@@ -418,6 +492,7 @@ class MainWindowFluent(FluentWindow):
             }}
             """
         )
+        self._apply_card_shadow(card, blur=20, offset_y=6, alpha=18)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(6)
@@ -446,6 +521,7 @@ class MainWindowFluent(FluentWindow):
             }}
             """
         )
+        self._apply_card_shadow(card, blur=20, offset_y=6, alpha=16)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(4)
@@ -464,21 +540,22 @@ class MainWindowFluent(FluentWindow):
         card.setStyleSheet(
             f"""
             QFrame#WpsInfoPanel {{
-                background-color: rgba(255, 255, 255, 0.92);
-                border: 1px solid #d8e0e7;
+                background-color: rgba(255, 255, 255, 0.96);
+                border: 1px solid #dde6ed;
                 border-left: 4px solid {accent};
-                border-radius: 14px;
+                border-radius: 16px;
             }}
             """
         )
+        self._apply_card_shadow(card, blur=24, offset_y=8, alpha=18)
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(6)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(8)
         title_label = QLabel(title)
-        title_label.setStyleSheet("color:#233241;font-size:13px;font-weight:700;")
+        title_label.setStyleSheet("color:#20303e;font-size:14px;font-weight:700;")
         body_label = QLabel(body)
         body_label.setWordWrap(True)
-        body_label.setStyleSheet("color:#66727e;font-size:12px;line-height:1.45;")
+        body_label.setStyleSheet("color:#66727e;font-size:12px;line-height:1.5;")
         layout.addWidget(title_label)
         layout.addWidget(body_label)
         return card
@@ -487,7 +564,48 @@ class MainWindowFluent(FluentWindow):
         self, text: str, slot, *, primary: bool = False, tip: str | None = None
     ):
         btn = PrimaryPushButton(text) if primary else PushButton(text)
-        btn.setFixedHeight(34)
+        btn.setFixedHeight(38)
+        btn.setCursor(Qt.PointingHandCursor)
+        if primary:
+            btn.setStyleSheet(
+                """
+                QPushButton {
+                    background-color: #217346;
+                    border: 1px solid #1b613a;
+                    border-radius: 12px;
+                    padding: 0 14px;
+                    color: #ffffff;
+                    font-weight: 700;
+                }
+                QPushButton:hover {
+                    background-color: #2c8754;
+                }
+                QPushButton:pressed {
+                    background-color: #195735;
+                }
+                """
+            )
+        else:
+            btn.setStyleSheet(
+                """
+                QPushButton {
+                    background-color: rgba(255, 255, 255, 0.98);
+                    border: 1px solid #d6e0e8;
+                    border-radius: 12px;
+                    padding: 0 14px;
+                    color: #314252;
+                    font-weight: 600;
+                }
+                QPushButton:hover {
+                    background-color: #f3f8f5;
+                    border-color: #bfd7c9;
+                    color: #163b27;
+                }
+                QPushButton:pressed {
+                    background-color: #ebf3ee;
+                }
+                """
+            )
         if tip:
             btn.setToolTip(tip)
         btn.clicked.connect(slot)
@@ -592,33 +710,40 @@ class MainWindowFluent(FluentWindow):
             return self._render_mode_tip(getattr(self._cfg, "slides_render_mode", "stroke"))
         return self._render_mode_tip(getattr(self._cfg, "word_render_mode", "stroke"))
 
+    def _current_render_mode_summary(self, pid: str, source: str) -> str:
+        return f"{source}模式：{self._current_render_mode_label(pid)}"
+
     def _office_export_tip(self, target_name: str) -> str:
+        """保留 UI 侧导出提示口径示例。
+
+        - DOCX 将按整套“演示”内容导出，当前共 N 页。
+        - PPTX 将按“演示”内容导出，当前共 N 页，并套用母版页眉/页脚。
+        - XLSX 将按“表格”内容导出，当前表格为 R × C。
+        - return f"{target_name} 将按当前“{source}”内容导出。"
+        """
         pid = self._current_content_page_id()
         source = self._content_mode_label(pid)
-        if target_name == "PPTX":
-            count = 0
+        slide_count = 0
+        table_rows = 0
+        table_cols = 0
+        if target_name in ("PPTX", "DOCX"):
             try:
-                count = self._presentation_editor.slide_count()
+                slide_count = self._presentation_editor.slide_count()
             except Exception:
-                count = 0
-            return f"PPTX 将按“{source}”内容导出，当前共 {max(1, count)} 页，并套用母版页眉/页脚。"
+                slide_count = 0
         if target_name == "XLSX":
-            rows = cols = 0
             try:
-                rows, cols = self._table_editor.row_column_count()
+                table_rows, table_cols = self._table_editor.row_column_count()
             except Exception:
-                rows = cols = 0
-            return f"XLSX 将按“{source}”内容导出，当前表格为 {max(1, rows)} × {max(1, cols)}。"
-        if target_name == "DOCX":
-            if pid == "slides":
-                count = 0
-                try:
-                    count = self._presentation_editor.slide_count()
-                except Exception:
-                    count = 0
-                return f"DOCX 将按整套“{source}”内容导出，当前共 {max(1, count)} 页。"
-            return f"DOCX 将按当前“{source}”内容导出。"
-        return f"{target_name} 将按当前“{source}”内容导出。"
+                table_rows = table_cols = 0
+        return self._document_export_service.export_summary_hint(
+            target_name,
+            source_label=source,
+            source_pid=pid,
+            slide_count=slide_count,
+            table_rows=table_rows,
+            table_cols=table_cols,
+        )
 
     def _notify_office_export_success(self, target_name: str, path: Path) -> None:
         self._log_event("导出", f"{target_name} 已导出到 {path.name}")
@@ -628,20 +753,23 @@ class MainWindowFluent(FluentWindow):
             msg = f"XLSX 已生成：{Path(path).name}。{self._office_export_tip('XLSX')}"
         elif target_name == "PPTX":
             msg = f"PPTX 已生成：{Path(path).name}。{self._office_export_tip('PPTX')}"
-        else:
+        elif target_name == "Markdown":
             msg = f"Markdown 已生成：{Path(path).name}。{self._office_export_tip('Markdown')}"
+        else:
+            msg = self._document_export_service.success_message(
+                target_name,
+                Path(path).name,
+                detail=self._office_export_tip(target_name),
+            )
         self._notify_success("已导出", msg)
 
     def _import_success_tip(self, kind: str, target_mode: str) -> str:
-        if kind == "xlsx":
-            return "建议先检查表格尺寸、网格线与右侧预览，再导出或发送。"
-        if kind == "pptx":
-            return "建议先翻看页数、母版文字和右侧预览，再导出或发送。"
-        if kind == "md":
-            if target_mode == "演示":
-                return "Markdown 已按分节导入到演示，建议先检查每页内容与预览。"
-            return "建议先检查段落换行与字形覆盖，再导出或发送。"
-        return "建议先检查排版、字形覆盖和右侧预览，再导出或发送。"
+        """保留 UI 侧导入提示口径示例。
+
+        - 建议先检查表格尺寸、网格线与右侧预览，再导出或发送。
+        - Markdown 已按分节导入到演示，建议先检查每页内容与预览。
+        """
+        return self._document_file_service.import_success_tip(kind, target_mode)
 
     def _set_pending_resume_program(self, lines: Optional[List[str]]) -> None:
         self._pending_program_after_m800 = list(lines) if lines else None
@@ -663,39 +791,31 @@ class MainWindowFluent(FluentWindow):
         combo.blockSignals(False)
 
     def _export_tooltip(self, *, kind: str, content_label: str, enabled: bool, button: bool) -> str:
-        if kind == "xlsx":
-            if enabled:
-                return "当前来源为表格，可导出 XLSX。"
-            return (
-                f"请先切到表格；当前来源：{content_label}。"
-                if button
-                else f"XLSX 仅支持表格；当前来源：{content_label}。"
-            )
-        if enabled:
-            return "当前来源为演示，可导出 PPTX。"
-        return (
-            f"请先切到演示；当前来源：{content_label}。"
-            if button
-            else f"PPTX 仅支持演示；当前来源：{content_label}。"
+        return self._document_export_service.export_tooltip(
+            kind=kind,
+            content_label=content_label,
+            enabled=enabled,
+            button=button,
         )
 
-    def _preflight_report(self) -> tuple[str, List[str]]:
+    def _content_inspection_context(
+        self,
+    ) -> tuple[str, str, str, List[str], List[VectorPath]]:
         pid = self._current_content_page_id()
         source = self._content_mode_label(pid)
         text = self._current_content_plain_text_for_glyph_check(pid)
         missing = self._missing_glyph_chars(pid)
         paths = self._work_paths()
+        return pid, source, text, missing, paths
+
+    def _preflight_report(self) -> tuple[str, List[str]]:
+        pid, source, text, missing, paths = self._content_inspection_context()
         errors: List[str] = []
         warnings: List[str] = []
         infos: List[str] = []
 
         infos.append(f"当前来源：{source}")
-        if pid == "word":
-            infos.append(f"文字模式：{self._word_render_mode_label()}")
-        elif pid == "table":
-            infos.append(f"表格模式：{self._table_render_mode_label()}")
-        elif pid == "slides":
-            infos.append(f"演示模式：{self._slides_render_mode_label()}")
+        infos.append(self._current_render_mode_summary(pid, source))
         infos.append(f"模式说明：{self._current_render_mode_tip(pid)}")
         infos.append(
             "纸张尺寸："
@@ -779,11 +899,7 @@ class MainWindowFluent(FluentWindow):
         return headline
 
     def _health_status_payload(self) -> tuple[str, str, str, List[str]]:
-        pid = self._current_content_page_id()
-        source = self._content_mode_label(pid)
-        text = self._current_content_plain_text_for_glyph_check(pid)
-        missing = self._missing_glyph_chars(pid)
-        paths = self._work_paths()
+        pid, source, text, missing, paths = self._content_inspection_context()
         errors: List[str] = []
         warnings: List[str] = []
         checks: List[str] = []
@@ -817,11 +933,7 @@ class MainWindowFluent(FluentWindow):
         return "ok", "#217346", "可以开始", checks[:3] or ["当前状态正常"]
 
     def _health_primary_action_spec(self) -> tuple[str, str, str]:
-        pid = self._current_content_page_id()
-        source = self._content_mode_label(pid)
-        text = self._current_content_plain_text_for_glyph_check(pid)
-        missing = self._missing_glyph_chars(pid)
-        paths = self._work_paths()
+        pid, source, text, missing, paths = self._content_inspection_context()
         pen_mode = str(getattr(self._cfg, "gcode_pen_mode", "z") or "z").strip().lower()
 
         if missing:
@@ -855,12 +967,7 @@ class MainWindowFluent(FluentWindow):
             return
         if action == "content":
             pid = self._current_content_page_id()
-            if pid == "table" and self._table_page is not None:
-                self._safe_switch_to(self._table_page, "表格")
-            elif pid == "slides" and self._slides_page is not None:
-                self._safe_switch_to(self._slides_page, "演示")
-            elif self._word_page is not None:
-                self._safe_switch_to(self._word_page, "文字")
+            self._switch_to_content_pid(pid)
             self._notify_info("继续处理", tip)
             return
         self._show_preflight_report()
@@ -883,8 +990,7 @@ class MainWindowFluent(FluentWindow):
 
     def _workflow_guidance_payload(self) -> tuple[str, str, str, str]:
         action, label, tip = self._health_primary_action_spec()
-        pid = self._current_content_page_id()
-        source = self._content_mode_label(pid)
+        _pid, source = self._current_content_context()
         if action == "missing":
             return (
                 "下一步建议  ·  先补齐字形",
@@ -1050,8 +1156,7 @@ class MainWindowFluent(FluentWindow):
         out.append(f"- 合并字库：{merge_font if merge_font is not None else '未设置'}")
         kuixiang_unit = float(getattr(self._cfg, "kuixiang_mm_per_unit", 0.01530))
         out.append(f"- 奎享 mm/unit：{kuixiang_unit:.5f}")
-        pid = self._current_content_page_id()
-        missing = self._missing_glyph_chars(pid)
+        _pid, _source, _text, missing = self._current_glyph_inspection_context()
         out.append(f"- 当前内容缺字形数量：{len(missing)}")
         if missing:
             preview = " ".join(missing[:12])
@@ -1466,26 +1571,21 @@ class MainWindowFluent(FluentWindow):
         # 左侧动作
         left = QWidget()
         left.setObjectName("homeActionPanel")
-        left.setStyleSheet(
-            """
-            QWidget#homeActionPanel {
-                background-color: #ffffff;
-                border: 1px solid #d8dee6;
-                border-radius: 14px;
-            }
-            """
-        )
+        self._apply_card_shadow(left, blur=30, offset_y=10, alpha=24)
         left_v = QVBoxLayout(left)
-        left_v.setContentsMargins(14, 14, 14, 14)
-        left_v.setSpacing(8)
+        left_v.setContentsMargins(18, 18, 18, 18)
+        left_v.setSpacing(10)
+        quick_eyebrow = QLabel("快捷入口")
+        quick_eyebrow.setObjectName("WpsSectionEyebrow")
+        left_v.addWidget(quick_eyebrow, 0, Qt.AlignLeft)
         quick_title = QLabel("常用操作")
-        quick_title.setStyleSheet("color:#233241;font-size:13px;font-weight:700;")
+        quick_title.setStyleSheet("color:#1f2f3d;font-size:18px;font-weight:700;")
         left_v.addWidget(quick_title)
         quick_hint = QLabel(
             "把最常用的打开、保存、导入和导出收在一起，方便像办公软件一样快速起步。"
         )
         quick_hint.setWordWrap(True)
-        quick_hint.setStyleSheet("color:#6c7a88;font-size:12px;")
+        quick_hint.setObjectName("WpsMutedCaption")
         left_v.addWidget(quick_hint)
         self._btn_open = self._create_home_action_button("打开工程…", self._open_project)
         self._btn_new = self._create_home_action_button("新建空白", self._new_project, primary=True)
@@ -1498,6 +1598,14 @@ class MainWindowFluent(FluentWindow):
         self._btn_import_md = self._create_home_action_button(
             "导入 Markdown…", self._import_markdown_dialog
         )
+        self._btn_connect_device_home = self._create_home_action_button(
+            "连接设备",
+            lambda: self._open_device_page_with_hint(
+                "这里可以连接串口、蓝牙虚拟串口，或切到 Wi-Fi / TCP。"
+            ),
+            primary=True,
+            tip="跳到设备页顶部的连接区域。",
+        )
         self._btn_recent = self._create_home_action_button(
             "最近文件",
             self._show_backstage,
@@ -1507,6 +1615,7 @@ class MainWindowFluent(FluentWindow):
         left_v.addWidget(self._btn_open)
         left_v.addWidget(self._btn_save)
         left_v.addWidget(self._btn_import_md)
+        left_v.addWidget(self._btn_connect_device_home)
         left_v.addWidget(self._btn_export_g)
         left_v.addWidget(self._btn_recent)
         left_v.addStretch(1)
@@ -1515,53 +1624,26 @@ class MainWindowFluent(FluentWindow):
         # 右侧：简要指引（优先可读性，减少「未完工」观感）
         right = QFrame()
         right.setObjectName("homeQuickCard")
-        right.setStyleSheet(
-            """
-            QFrame#homeQuickCard {
-                background-color: #f9fbfc;
-                border: 1px solid #d8dee6;
-                border-radius: 14px;
-            }
-            """
-        )
+        self._apply_card_shadow(right, blur=32, offset_y=12, alpha=22)
         rv = QVBoxLayout(right)
-        rv.setContentsMargins(18, 18, 18, 18)
-        rv.setSpacing(10)
+        rv.setContentsMargins(22, 22, 22, 22)
+        rv.setSpacing(12)
+        hero_eyebrow = QLabel("工作台")
+        hero_eyebrow.setObjectName("WpsSectionEyebrow")
+        rv.addWidget(hero_eyebrow, 0, Qt.AlignLeft)
         rv.addWidget(TitleLabel("快速上手"))
         badge = QLabel("WPS 风格工作台")
         badge.setObjectName("homeQuickBadge")
-        badge.setStyleSheet(
-            """
-            QLabel#homeQuickBadge {
-                color: #0f5a34;
-                background: #e7f4eb;
-                border: 1px solid #cce7d5;
-                border-radius: 999px;
-                padding: 4px 10px;
-                font-size: 11px;
-                font-weight: 700;
-            }
-            """
-        )
         rv.addWidget(badge, 0, Qt.AlignLeft)
         desc = QLabel(
-            "1. 对标 WPS 三件套："
-            "「文字」单线书写、「表格」网格、「演示」左列表+多页富文本；"
-            "预览随当前页切换。\n"
-            "2. 「开始」条：剪贴板 + 字体 + B/I/U + 对齐；"
-            "表格页「行列」快捷；演示页「段落」列表/缩进 + "
-            "「样式」标题1/标题2/正文预设（随工程保存）；"
-            "表格/演示右键亦可用。预览：缩放、复制/导出 PNG；"
-            "幻灯片列表：页管理。状态栏：字数/表格尺寸/页码。"
-            "「视图」：预览缩放与导出。\n"
-            "3. 「插入」可导入 Markdown 与符号；"
-            "「页面布局」进入纸张/页边距/坐标设置；"
-            "「审阅」用于演示页修订。\n"
-            "4. 「设备」页核对 Z/进给/坐标/纸张；先导出 G-code 再小范围试写。"
+            "• 文字、表格、演示三种工作区共用一套右侧预览与导出链路。\n"
+            "• 开始页负责新建、打开、导入和导出，尽量把高频动作前置。\n"
+            "• 页面布局与设备参数分开，减少编辑内容时的干扰。\n"
+            "• 正式发送前，先看右侧预览和开始前检查，会更稳。"
         )
         desc.setWordWrap(True)
         desc.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        desc.setStyleSheet("color:#3d444d;font-size:13px;")
+        desc.setStyleSheet("color:#42505d;font-size:13px;line-height:1.6;")
         rv.addWidget(desc)
         rv.addStretch(1)
         bar_l.addWidget(right)
@@ -1690,19 +1772,11 @@ class MainWindowFluent(FluentWindow):
         wv.setSpacing(8)
         title_row = QWidget()
         title_row.setObjectName("WordWorkspaceHeader")
-        title_row.setStyleSheet(
-            """
-            QWidget#WordWorkspaceHeader {
-                background-color: #f2f6f9;
-                border: 1px solid #d6dee6;
-                border-radius: 12px;
-            }
-            """
-        )
         tr = QHBoxLayout(title_row)
-        tr.setContentsMargins(12, 8, 12, 8)
+        tr.setContentsMargins(14, 8, 14, 8)
         tr.setSpacing(10)
-        self._workspace_title = TitleLabel("文字")
+        self._workspace_title = QLabel("正文编辑区")
+        self._workspace_title.setStyleSheet("color:#223240;font-size:14px;font-weight:700;")
         tr.addWidget(self._workspace_title)
         tr.addStretch(1)
         line_space_lab = QLabel("单线行距")
@@ -1878,6 +1952,47 @@ class MainWindowFluent(FluentWindow):
                 accent="#b06a12",
             )
         )
+        device_connect_card = QFrame()
+        device_connect_card.setObjectName("helpActionCard")
+        self._apply_card_shadow(device_connect_card, blur=28, offset_y=10, alpha=20)
+        device_connect_layout = QVBoxLayout(device_connect_card)
+        device_connect_layout.setContentsMargins(18, 18, 18, 18)
+        device_connect_layout.setSpacing(10)
+        device_connect_eyebrow = QLabel("连接入口")
+        device_connect_eyebrow.setObjectName("WpsSectionEyebrow")
+        device_connect_layout.addWidget(device_connect_eyebrow, 0, Qt.AlignLeft)
+        device_connect_title = QLabel("先在这里连接设备")
+        device_connect_title.setStyleSheet("color:#1f2f3d;font-size:18px;font-weight:700;")
+        device_connect_layout.addWidget(device_connect_title)
+        device_connect_hint = QLabel(
+            "如果你在界面里找不到串口或蓝牙连接，看这里。"
+            "蓝牙目前按“系统配对后出现的虚拟串口 / COM 口”来连接。"
+        )
+        device_connect_hint.setWordWrap(True)
+        device_connect_hint.setStyleSheet("color:#5d6a76;font-size:12px;line-height:1.5;")
+        device_connect_layout.addWidget(device_connect_hint)
+        device_connect_row = QHBoxLayout()
+        device_connect_row.setSpacing(8)
+        self._btn_device_connect_hero = PrimaryPushButton("连接 / 断开设备")
+        self._btn_device_connect_hero.clicked.connect(self._toggle_serial)
+        self._btn_device_scan_hero = PushButton("扫描串口")
+        self._btn_device_scan_hero.clicked.connect(self._refresh_ports)
+        self._btn_device_filter_hero = CheckBox("只看蓝牙候选")
+        self._btn_device_filter_hero.stateChanged.connect(
+            lambda _: self._cb_bt_only.setChecked(self._btn_device_filter_hero.isChecked())
+        )
+        device_connect_row.addWidget(self._btn_device_connect_hero)
+        device_connect_row.addWidget(self._btn_device_scan_hero)
+        device_connect_row.addWidget(self._btn_device_filter_hero)
+        device_connect_row.addStretch(1)
+        device_connect_layout.addLayout(device_connect_row)
+        self._device_connect_summary = QLabel(
+            "推荐步骤：1. 选“串口 / 蓝牙串口” 2. 扫描串口 3. 选择 COM 口 4. 点击连接。"
+        )
+        self._device_connect_summary.setWordWrap(True)
+        self._device_connect_summary.setStyleSheet("color:#52606d;font-size:12px;")
+        device_connect_layout.addWidget(self._device_connect_summary)
+        dv.addWidget(device_connect_card)
 
         row = QSplitter()
         row.setChildrenCollapsible(False)
@@ -2085,26 +2200,32 @@ class MainWindowFluent(FluentWindow):
         gcord.addWidget(_coord_hint)
         lv.addWidget(gb_coord)
 
-        gb_serial = QGroupBox("连接与发送")
+        gb_serial = QGroupBox("设备连接与发送")
         self._register_device_setting_group(gb_serial)
         sv = QVBoxLayout(gb_serial)
         sv.setSpacing(8)
-        sv.addWidget(QLabel("连接方式"))
+        conn_title = QLabel("连接方式（串口 / 蓝牙串口 / Wi-Fi）")
+        conn_title.setStyleSheet("color:#233241;font-size:13px;font-weight:700;")
+        sv.addWidget(conn_title)
         self._conn_mode_combo = ComboBox()
-        self._conn_mode_combo.addItem("串口 / 蓝牙 SPP", "serial")
+        self._conn_mode_combo.addItem("串口 / 蓝牙串口 (SPP / COM)", "serial")
         self._conn_mode_combo.addItem("Wi-Fi / Telnet (TCP)", "tcp")
         self._conn_mode_combo.currentIndexChanged.connect(self._on_connection_mode_changed)
         sv.addWidget(self._conn_mode_combo)
-        conn_hint = QLabel("先选连接方式，再连接设备；不确定时通常选串口 / 蓝牙。")
+        conn_hint = QLabel(
+            "蓝牙目前走“系统已配对后的虚拟串口”模式。"
+            "也就是先在系统里配对设备，出现 COM 口后，再回到这里连接。"
+        )
         conn_hint.setWordWrap(True)
         conn_hint.setStyleSheet("color:#6b7280;font-size:12px;")
         sv.addWidget(conn_hint)
-        self._cb_bt_only = CheckBox("仅列出疑似蓝牙串口")
+        self._cb_bt_only = CheckBox("只看蓝牙串口候选")
         self._cb_bt_only.setChecked(bool(getattr(self._cfg, "serial_show_bluetooth_only", False)))
         self._cb_bt_only.stateChanged.connect(lambda _: self._on_fluent_bluetooth_filter_changed())
         sv.addWidget(self._cb_bt_only)
         self._port_combo = ComboBox()
-        self._btn_ports = PushButton("刷新端口")
+        self._port_combo.setPlaceholderText("选择串口或蓝牙配对后出现的虚拟串口")
+        self._btn_ports = PushButton("扫描串口")
         self._btn_ports.clicked.connect(self._refresh_ports)
         self._baud_spin = SpinBox()
         self._baud_spin.setRange(9600, 921600)
@@ -2155,7 +2276,7 @@ class MainWindowFluent(FluentWindow):
         self._btn_reset.setEnabled(False)
         self._btn_reset.clicked.connect(self._soft_reset_machine)
 
-        sv.addWidget(QLabel("端口"))
+        sv.addWidget(QLabel("串口设备 / 蓝牙虚拟串口"))
         sv.addWidget(self._port_combo)
         sv.addWidget(self._btn_ports)
         sv.addWidget(QLabel("波特率"))
@@ -2506,13 +2627,31 @@ class MainWindowFluent(FluentWindow):
 
     def _build_wps_top_nav(self) -> QWidget:
         bar = QWidget()
+        bar.setObjectName("WpsTopNavBar")
+        bar.setStyleSheet(
+            """
+            QWidget#WpsTopNavBar {
+                background: qlineargradient(
+                    x1:0,
+                    y1:0,
+                    x2:1,
+                    y2:0,
+                    stop:0 rgba(255, 255, 255, 0.96),
+                    stop:1 rgba(242, 247, 244, 0.96)
+                );
+                border: 1px solid #dce5eb;
+                border-radius: 18px;
+            }
+            """
+        )
+        self._apply_card_shadow(bar, blur=28, offset_y=10, alpha=20)
         row = QHBoxLayout(bar)
-        row.setContentsMargins(0, 2, 0, 4)
-        row.setSpacing(8)
+        row.setContentsMargins(12, 8, 12, 8)
+        row.setSpacing(10)
 
         file_btn = PrimaryPushButton("文件")
         file_btn.setObjectName("WpsFileButton")
-        file_btn.setFixedHeight(34)
+        file_btn.setFixedHeight(32)
         file_btn.setMinimumWidth(74)
         file_btn.setStyleSheet(
             """
@@ -2537,42 +2676,18 @@ class MainWindowFluent(FluentWindow):
 
         info_box = QFrame()
         info_box.setObjectName("WpsTopNavInfo")
-        info_box.setStyleSheet(
-            """
-            QFrame#WpsTopNavInfo {
-                background-color: rgba(255, 255, 255, 0.96);
-                border: 1px solid #dfe6ec;
-                border-radius: 10px;
-            }
-            """
-        )
         info_row = QVBoxLayout(info_box)
-        info_row.setContentsMargins(12, 6, 12, 6)
-        info_row.setSpacing(0)
+        info_row.setContentsMargins(14, 6, 14, 6)
+        info_row.setSpacing(1)
         title = QLabel(self.windowTitle())
-        title.setStyleSheet("color:#2c333a;font-size:13px;font-weight:700;")
+        title.setStyleSheet("color:#223240;font-size:12px;font-weight:700;")
         info_row.addWidget(title)
         meta = QLabel()
-        meta.setStyleSheet("color:#7a858f;font-size:11px;")
+        meta.setStyleSheet("color:#73808c;font-size:10px;")
         info_row.addWidget(meta)
         row.addWidget(info_box)
         self._top_nav_titles.append(title)
         self._top_nav_meta_labels.append(meta)
-
-        sep = QLabel("│")
-        sep.setStyleSheet("color:#c4ccd4;")
-        row.addWidget(sep)
-
-        for label, widget in (
-            ("开始", self._home_page),
-            ("文字", self._word_page),
-            ("表格", self._table_page),
-            ("演示", self._slides_page),
-            ("设备", self._device_page),
-            ("帮助", self._help_page),
-        ):
-            if widget is not None:
-                self._register_top_nav_button(row, label, widget)
 
         return self._finalize_wps_top_nav(bar, row)
 
@@ -2588,21 +2703,21 @@ class MainWindowFluent(FluentWindow):
         btn.setStyleSheet(
             """
             QPushButton#WpsModeTabButton {
-                background-color: rgba(255, 255, 255, 0.58);
-                border: 1px solid transparent;
-                border-radius: 10px;
-                padding: 0px 14px;
-                color: #4a545e;
+                background-color: rgba(255, 255, 255, 0.72);
+                border: 1px solid rgba(214, 224, 232, 0.88);
+                border-radius: 12px;
+                padding: 0px 16px;
+                color: #465462;
                 font-weight: 700;
             }
             QPushButton#WpsModeTabButton:hover {
-                background-color: #eef4f0;
-                border-color: #dce6de;
-                color: #0f3d26;
+                background-color: #f2f9f5;
+                border-color: #c9dfd1;
+                color: #103d27;
             }
             QPushButton#WpsModeTabButton:checked {
-                background-color: #f7fff9;
-                border: 1px solid #cfe2d6;
+                background-color: #ffffff;
+                border: 1px solid #bdd7c7;
                 color: #0f3d26;
             }
             """
@@ -2612,36 +2727,29 @@ class MainWindowFluent(FluentWindow):
 
     def _finalize_wps_top_nav(self, bar: QWidget, row: QHBoxLayout) -> QWidget:
         row.addStretch(1)
-        bar.setStyleSheet(
-            """
-            QWidget {
-                background-color: transparent;
-            }
-            """
-        )
         self._sync_top_nav_meta()
         return bar
 
     def _ribbon_tab_button_stylesheet(self) -> str:
         return """
             QPushButton#WpsModeTabButton {
-                background-color: #fbfcfd;
-                border: 1px solid #dfe6ec;
+                background-color: rgba(255, 255, 255, 0.78);
+                border: 1px solid #d7e1e8;
                 border-bottom: none;
-                border-radius: 6px 6px 0 0;
-                padding: 0px 12px;
+                border-radius: 10px 10px 0 0;
+                padding: 0px 14px;
                 color: #4a545e;
                 font-weight: 700;
             }
             QPushButton#WpsModeTabButton:hover {
-                border-color: #2d8f5c;
-                background-color: #eef8f1;
+                border-color: #c7d8cd;
+                background-color: #f3f8f5;
                 color: #0f3d26;
             }
             QPushButton#WpsModeTabButton:checked {
-                background-color: #f3f5f7;
-                border: 1px solid #dfe6ec;
-                border-bottom: 1px solid #f3f5f7;
+                background-color: #ffffff;
+                border: 1px solid #d7e1e8;
+                border-bottom: 1px solid #ffffff;
                 color: #0f3d26;
             }
         """
@@ -2654,8 +2762,9 @@ class MainWindowFluent(FluentWindow):
         lb = QLabel(" ".join(f"{t:>3}" for t in ticks) + "   (mm)")
         lb.setObjectName("RulerBar")
         lb.setStyleSheet(
-            "background-color:#e4e4e4;border-bottom:1px solid #c8c8c8;color:#555555;"
-            'font-family:"Menlo","Consolas",monospace;padding:3px 8px;'
+            "background-color:#eef2f5;border:1px solid #dde5ec;color:#607080;"
+            "border-radius:10px;"
+            'font-family:"Menlo","Consolas",monospace;padding:4px 10px;'
         )
         return lb
 
@@ -2680,27 +2789,37 @@ class MainWindowFluent(FluentWindow):
     def _sync_top_nav_meta(self) -> None:
         saved = self._last_saved_at or "未保存"
         proj = self._project_path.name if self._project_path is not None else "临时文档"
-        text = f"工程 {proj}   ·   最近保存 {saved}"
+        text = f"{self._current_mode_label()}   ·   工程 {proj}   ·   最近保存 {saved}"
         for label in self._top_nav_meta_labels:
             label.setText(text)
 
     def _build_mode_ribbon(self, mode: str) -> QWidget:
         shell = QWidget()
+        shell.setObjectName("WpsRibbonShell")
         outer = QVBoxLayout(shell)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
         tab_bar = QWidget()
+        tab_bar.setObjectName("WpsRibbonTabBar")
+        tab_bar.setStyleSheet(
+            """
+            QWidget#WpsRibbonTabBar {
+                background: transparent;
+            }
+            """
+        )
         tab_row = QHBoxLayout(tab_bar)
-        tab_row.setContentsMargins(0, 0, 0, 0)
+        tab_row.setContentsMargins(6, 0, 6, 0)
         tab_row.setSpacing(4)
 
         stack = QStackedWidget()
         stack.setStyleSheet(
-            "QStackedWidget{background-color:#f3f5f7;"
-            "border:1px solid #dfe6ec;border-top:none;"
-            "border-radius:0 0 6px 6px;}"
+            "QStackedWidget{background-color:#ffffff;"
+            "border:1px solid #d9e2e9;border-top:none;"
+            "border-radius:0 0 14px 14px;}"
         )
+        stack.setMaximumHeight(118)
         button_group = QButtonGroup(shell)
         button_group.setExclusive(True)
 
@@ -2715,8 +2834,8 @@ class MainWindowFluent(FluentWindow):
             btn = QPushButton(label)
             btn.setObjectName("WpsModeTabButton")
             btn.setCheckable(True)
-            btn.setFixedHeight(30)
-            btn.setMinimumWidth(78)
+            btn.setFixedHeight(32)
+            btn.setMinimumWidth(74)
             btn.setStyleSheet(self._ribbon_tab_button_stylesheet())
             button_group.addButton(btn, idx)
             btn.clicked.connect(lambda _checked=False, i=idx: stack.setCurrentIndex(i))
@@ -2732,7 +2851,8 @@ class MainWindowFluent(FluentWindow):
 
     def _build_ribbon_panel(self) -> QWidget:
         panel = QWidget()
-        panel.setStyleSheet("background-color:#f3f5f7;")
+        panel.setMinimumHeight(86)
+        panel.setStyleSheet("background-color:#ffffff;")
         return panel
 
     def _page_mm_to_surface_width(
@@ -2776,7 +2896,7 @@ class MainWindowFluent(FluentWindow):
     ) -> tuple[QWidget, QFrame]:
         host = QWidget()
         row = QHBoxLayout(host)
-        row.setContentsMargins(0, 0, 0, 0)
+        row.setContentsMargins(0, 8, 0, 0)
         row.setSpacing(0)
         row.addStretch(1)
 
@@ -2788,8 +2908,8 @@ class MainWindowFluent(FluentWindow):
             """
             QFrame#WpsDocumentSurface {
                 background-color: #ffffff;
-                border: 1px solid #d7dee6;
-                border-radius: 14px;
+                border: 1px solid #dfe7ee;
+                border-radius: 18px;
             }
             """
         )
@@ -2825,21 +2945,22 @@ class MainWindowFluent(FluentWindow):
         box.setStyleSheet(
             """
             QFrame#WpsRibbonGroup {
-                background-color: #f3f5f7;
-                border-right: 1px solid #d8dee5;
+                background-color: #ffffff;
+                border-right: 1px solid #e8eef2;
             }
             """
         )
+        box.setMinimumHeight(82)
         outer = QVBoxLayout(box)
-        outer.setContentsMargins(8, 4, 8, 4)
+        outer.setContentsMargins(8, 6, 8, 4)
         outer.setSpacing(2)
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(6)
+        body.setSpacing(4)
         outer.addLayout(body, 1)
         caption = QLabel(title)
         caption.setAlignment(Qt.AlignCenter)
-        caption.setStyleSheet("color:#7a858f;font-size:11px;padding-top:1px;")
+        caption.setStyleSheet("color:#82909d;font-size:10px;padding-top:1px;")
         outer.addWidget(caption)
         return box, body
 
@@ -2847,15 +2968,15 @@ class MainWindowFluent(FluentWindow):
         self, text: str, tip: str, slot, *, width: int = 82
     ) -> PushButton:
         btn = PushButton(text)
-        btn.setFixedSize(width, 58)
+        btn.setFixedSize(width, 42)
         btn.setToolTip(tip)
         btn.setStyleSheet(
             """
             QPushButton {
                 background-color: #ffffff;
                 border: 1px solid #d9e1e8;
-                border-radius: 6px;
-                padding: 6px 8px;
+                border-radius: 8px;
+                padding: 4px 8px;
                 text-align: center;
                 font-weight: 700;
             }
@@ -2872,7 +2993,7 @@ class MainWindowFluent(FluentWindow):
         self, text: str, tip: str, slot, *, width: int = 98
     ) -> PushButton:
         btn = PushButton(text)
-        btn.setFixedSize(width, 28)
+        btn.setFixedSize(width, 26)
         btn.setToolTip(tip)
         btn.clicked.connect(slot)
         return btn
@@ -3835,6 +3956,29 @@ class MainWindowFluent(FluentWindow):
             "slides": "演示",
         }.get(pid, "文字")
 
+    def _content_pid_from_mode_label(self, mode_label: str) -> str:
+        return {
+            "文字": "word",
+            "表格": "table",
+            "演示": "slides",
+        }.get(mode_label, "word")
+
+    def _content_page_for_pid(self, pid: str) -> Optional[QWidget]:
+        if pid == "table":
+            return self._table_page
+        if pid == "slides":
+            return self._slides_page
+        return self._word_page
+
+    def _switch_to_content_pid(self, pid: str) -> None:
+        page = self._content_page_for_pid(pid)
+        if page is not None:
+            self._safe_switch_to(page, self._content_mode_label(pid))
+
+    def _current_content_context(self) -> tuple[str, str]:
+        pid = self._current_content_page_id()
+        return pid, self._content_mode_label(pid)
+
     def _status_line_content_extra(self, pid: str) -> str:
         if pid == "table":
             try:
@@ -3865,7 +4009,15 @@ class MainWindowFluent(FluentWindow):
             return ""
 
     def _current_content_source_label(self) -> str:
-        return self._content_mode_label(self._current_content_page_id())
+        return self._current_content_context()[1]
+
+    def _status_line_content_context(self) -> tuple[str, str, str]:
+        pid = self._current_content_page_id()
+        return (
+            pid,
+            self._content_mode_label(pid),
+            self._status_line_content_extra(pid),
+        )
 
     def _current_content_plain_text_for_glyph_check(self, pid: str) -> str:
         if pid == "table":
@@ -3891,13 +4043,23 @@ class MainWindowFluent(FluentWindow):
         except Exception:
             return ""
 
-    def _glyph_status_hint(self, pid: str) -> str:
+    def _glyph_inspection_context(self, pid: str) -> tuple[str, List[str]]:
         text = self._current_content_plain_text_for_glyph_check(pid)
         if not text.strip():
-            return ""
+            return text, []
         try:
-            missing = self._mapper.missing_text_chars(text)
+            return text, self._mapper.missing_text_chars(text)
         except Exception:
+            return text, []
+
+    def _current_glyph_inspection_context(self) -> tuple[str, str, str, List[str]]:
+        pid, source = self._current_content_context()
+        text, missing = self._glyph_inspection_context(pid)
+        return pid, source, text, missing
+
+    def _glyph_status_hint(self, pid: str) -> str:
+        text, missing = self._glyph_inspection_context(pid)
+        if not text.strip():
             return ""
         if not missing:
             return "字形：完整"
@@ -3913,22 +4075,14 @@ class MainWindowFluent(FluentWindow):
         return ""
 
     def _missing_glyph_chars(self, pid: str) -> List[str]:
-        text = self._current_content_plain_text_for_glyph_check(pid)
-        if not text.strip():
-            return []
-        try:
-            return self._mapper.missing_text_chars(text)
-        except Exception:
-            return []
+        _text, missing = self._glyph_inspection_context(pid)
+        return missing
 
     def _show_missing_glyphs_dialog(self) -> None:
-        pid = self._current_content_page_id()
-        source = self._content_mode_label(pid)
-        text = self._current_content_plain_text_for_glyph_check(pid)
+        _pid, source, text, missing = self._current_glyph_inspection_context()
         if not text.strip():
             QMessageBox.information(self, "缺失字符检查", f"当前“{source}”没有可检查的文本内容。")
             return
-        missing = self._missing_glyph_chars(pid)
         if not missing:
             QMessageBox.information(
                 self,
@@ -3964,8 +4118,8 @@ class MainWindowFluent(FluentWindow):
         )
 
     def _build_job_summary(self, paths: List[VectorPath]) -> str:
-        pid = self._current_content_page_id()
-        source = self._content_mode_label(pid)
+        pid, source = self._current_content_context()
+        render_mode_summary = self._current_render_mode_summary(pid, source)
         path_count = len(paths)
         point_count = sum(len(vp.points) for vp in paths)
         pm = str(getattr(self._cfg, "gcode_pen_mode", "z") or "z").strip().lower()
@@ -3989,6 +4143,8 @@ class MainWindowFluent(FluentWindow):
             summary += f"\n表格模式：{self._table_render_mode_label()}"
         elif pid == "slides":
             summary += f"\n演示模式：{self._slides_render_mode_label()}"
+        elif render_mode_summary:
+            summary += f"\n{render_mode_summary}"
         glyph_warning = self._glyph_warning_summary(pid)
         if glyph_warning:
             summary += f"\n注意：{glyph_warning}"
@@ -5037,10 +5193,11 @@ class MainWindowFluent(FluentWindow):
     def _refresh_export_action_states(self) -> None:
         pid = self._current_content_page_id()
         content_label = self._content_mode_label(pid)
-        can_docx = pid in ("word", "slides", "table")
-        can_xlsx = pid == "table"
-        can_pptx = pid == "slides"
-        can_md = pid in ("word", "slides", "table")
+        state = self._document_export_service.build_export_state(pid, content_label)
+        can_docx = state.docx
+        can_xlsx = state.xlsx
+        can_pptx = state.pptx
+        can_md = state.markdown
 
         if hasattr(self, "_act_export_docx"):
             self._act_export_docx.setEnabled(can_docx)
@@ -5094,12 +5251,7 @@ class MainWindowFluent(FluentWindow):
         if hasattr(self, "_btn_export_gcode"):
             self._btn_export_gcode.setEnabled(True)
         if hasattr(self, "_export_hint"):
-            self._export_hint.setText(
-                "会根据当前内容来源导出对应格式。"
-                f" 当前来源：{content_label}；"
-                f" DOCX：可用；XLSX：{'可用' if can_xlsx else '仅表格'}；"
-                f" PPTX：{'可用' if can_pptx else '仅演示'}。"
-            )
+            self._export_hint.setText(state.summary_hint)
         self._refresh_undo_redo_menu_state()
 
     def _update_status_line(self) -> None:
@@ -5119,8 +5271,7 @@ class MainWindowFluent(FluentWindow):
         }.get(cur_name, "开始")
         if page in ("文字", "表格", "演示"):
             self._last_active_mode = page
-        content_pid = self._current_content_page_id()
-        content_label = self._content_mode_label(content_pid)
+        content_pid, content_label, content_extra = self._status_line_content_context()
         snap = self._machine_monitor.snapshot
         if self._grbl is not None:
             is_tcp = str(getattr(self._cfg, "connection_mode", "serial")) == "tcp"
@@ -5130,7 +5281,6 @@ class MainWindowFluent(FluentWindow):
             conn = "未连接"
         proj = self._project_path.name if self._project_path is not None else "未保存"
         extra = ""
-        content_extra = self._status_line_content_extra(content_pid)
         glyph_hint = self._glyph_status_hint(content_pid)
         if cur_name in ("word", "table", "slides"):
             if content_extra:
@@ -5203,6 +5353,25 @@ class MainWindowFluent(FluentWindow):
                         f"当前通过 {mode} 连接，设备返回状态为 {snap.state}。"
                         "发送程序前建议先确认坐标、抬落笔和 RX 预算。"
                     )
+            if hasattr(self, "_device_connect_summary"):
+                if self._grbl is None:
+                    self._device_connect_summary.setText(
+                        "当前未连接。请在下方选择“串口 / 蓝牙串口 (SPP / COM)”或 Wi-Fi / TCP，"
+                        "然后点击“连接 / 断开设备”。"
+                    )
+                else:
+                    is_tcp = str(getattr(self._cfg, "connection_mode", "serial")) == "tcp"
+                    mode = "Wi-Fi / TCP" if is_tcp else "串口 / 蓝牙串口"
+                    self._device_connect_summary.setText(
+                        f"当前已通过 {mode} 连接，设备状态：{snap.state}。"
+                        "如果要切换连接方式，先断开再重新连接。"
+                    )
+            if hasattr(self, "_btn_device_connect_hero") and hasattr(self, "_btn_connect"):
+                self._btn_device_connect_hero.setText(self._btn_connect.text())
+            if hasattr(self, "_btn_device_filter_hero") and hasattr(self, "_cb_bt_only"):
+                self._btn_device_filter_hero.blockSignals(True)
+                self._btn_device_filter_hero.setChecked(self._cb_bt_only.isChecked())
+                self._btn_device_filter_hero.blockSignals(False)
 
     def _set_job_status(
         self,
@@ -5578,6 +5747,14 @@ class MainWindowFluent(FluentWindow):
         if p.is_file():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(p.resolve())))
 
+    def _show_quick_start(self) -> None:
+        for name in ("QUICKSTART.md", "QUICK_START.md"):
+            p = self._repo_root_file(name)
+            if p.is_file():
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(p.resolve())))
+                return
+        self._notify_warning("快速入门", "未找到 QUICKSTART.md 或 QUICK_START.md。")
+
     def _open_ai_prompts_document(self) -> None:
         p = self._repo_root_file("AI_PROMPTS.md")
         if p.is_file():
@@ -5721,48 +5898,30 @@ class MainWindowFluent(FluentWindow):
 
     def _open_office_or_wps_file(self, path: Path) -> None:
         p = path
-        target_mode = "文字"
         try:
-            p = try_convert_wps_private_to_office(p)
-            kind = detect_office_kind(p)
-            if kind == "docx":
-                self._new_project()
-                self._doc_title = p.stem
-                self._word_editor.setHtml(import_docx_to_html(p))
-                self._safe_switch_to(self._word_page, "文字")
-                target_mode = "文字"
-            elif kind == "xlsx":
-                self._new_project()
-                self._doc_title = p.stem
-                self._apply_table_blob(import_xlsx_to_table_blob(p))
-                self._safe_switch_to(self._table_page, "表格")
-                target_mode = "表格"
-            elif kind == "pptx":
-                self._new_project()
-                self._doc_title = p.stem
-                slides = import_pptx_to_slides(p)
-                self._apply_slides_storage(slides)
-                self._safe_switch_to(self._slides_page, "演示")
-                target_mode = "演示"
-            elif kind == "md":
-                self._new_project()
-                self._doc_title = p.stem
-                slides_md = import_markdown_file_to_slides_plain(p)
-                if slides_md is not None:
-                    self._apply_slides_storage(slides_md)
-                    self._safe_switch_to(self._slides_page, "演示")
-                    target_mode = "演示"
+            imported = self._document_file_service.import_document(p)
+            p = imported.effective_path
+            kind = imported.kind
+            target_mode = imported.target_mode
+            self._new_project()
+            self._doc_title = imported.title
+            if target_mode == "文字":
+                if imported.word_html is not None:
+                    self._word_editor.setHtml(imported.word_html)
                 else:
-                    self._word_editor.setPlainText(import_markdown_to_plain(p))
-                    self._safe_switch_to(self._word_page, "文字")
-                    target_mode = "文字"
+                    self._word_editor.setPlainText(imported.word_plain_text or "")
+            elif target_mode == "表格":
+                self._apply_table_blob(imported.table_blob)
+            elif target_mode == "演示":
+                self._apply_slides_storage(imported.slides)
             else:
-                raise OfficeImportError("不支持的文件类型。")
+                raise OfficeImportError(f"未知导入目标模式：{target_mode}")
+            self._switch_to_content_pid(self._content_pid_from_mode_label(target_mode))
         except OfficeImportError as e:
-            self._notify_error("导入失败", f"{p.name} 无法导入：{e}")
+            self._notify_error("导入失败", f"{p.name} 无法导入: {e}")
             return
         except Exception as e:
-            self._notify_error("导入失败", f"{p.name} 导入时发生异常：{e}")
+            self._notify_error("导入失败", f"{p.name} 导入时发生异常: {e}")
             return
 
         # 作为“未保存工程”的临时内容导入
@@ -6674,18 +6833,17 @@ class MainWindowFluent(FluentWindow):
         )
         if not path:
             return
-        try:
-            paragraphs, src_html = self._docx_export_payload()
-            export_docx(Path(path), paragraphs=paragraphs, html_text=src_html, prefer_soffice=True)
-        except OfficeExportError as e:
-            self._log_event("导出", f"DOCX 导出失败：{e}", level="ERROR")
-            self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
-            return
-        except Exception as e:
-            self._log_event("导出", f"DOCX 导出异常：{e}", level="ERROR")
-            self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
-            return
-        self._notify_office_export_success("DOCX", Path(path))
+        target_path = Path(path)
+        paragraphs, src_html = self._docx_export_payload()
+        self._run_office_export(
+            target_name="DOCX",
+            path=target_path,
+            action=lambda: self._document_export_service.export_docx_document(
+                target_path,
+                paragraphs=paragraphs,
+                html_text=src_html,
+            ),
+        )
 
     def _export_xlsx(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -6698,20 +6856,19 @@ class MainWindowFluent(FluentWindow):
             return
         try:
             self._require_export_source("table", "XLSX")
-            export_xlsx(Path(path), table_blob=self._capture_table_blob(), prefer_soffice=True)
         except ValueError as e:
             self._log_event("导出", f"XLSX 导出前检查失败：{e}", level="ERROR")
             self._notify_error("导出失败", str(e))
             return
-        except OfficeExportError as e:
-            self._log_event("导出", f"XLSX 导出失败：{e}", level="ERROR")
-            self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
-            return
-        except Exception as e:
-            self._log_event("导出", f"XLSX 导出异常：{e}", level="ERROR")
-            self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
-            return
-        self._notify_office_export_success("XLSX", Path(path))
+        target_path = Path(path)
+        self._run_office_export(
+            target_name="XLSX",
+            path=target_path,
+            action=lambda: self._document_export_service.export_xlsx_document(
+                target_path,
+                table_blob=self._capture_table_blob(),
+            ),
+        )
 
     def _export_pptx(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -6724,25 +6881,20 @@ class MainWindowFluent(FluentWindow):
             return
         try:
             self._require_export_source("slides", "PPTX")
-            # PPTX 导出：使用“套用母版页眉/页脚后的纯文本版本”
-            export_pptx(
-                Path(path),
-                slides=self._capture_slides_storage_for_export(),
-                prefer_soffice=True,
-            )
         except ValueError as e:
             self._log_event("导出", f"PPTX 导出前检查失败：{e}", level="ERROR")
             self._notify_error("导出失败", str(e))
             return
-        except OfficeExportError as e:
-            self._log_event("导出", f"PPTX 导出失败：{e}", level="ERROR")
-            self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
-            return
-        except Exception as e:
-            self._log_event("导出", f"PPTX 导出异常：{e}", level="ERROR")
-            self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
-            return
-        self._notify_office_export_success("PPTX", Path(path))
+        target_path = Path(path)
+        # PPTX 导出：使用“套用母版页眉/页脚后的纯文本版本”
+        self._run_office_export(
+            target_name="PPTX",
+            path=target_path,
+            action=lambda: self._document_export_service.export_pptx_document(
+                target_path,
+                slides=self._capture_slides_storage_for_export(),
+            ),
+        )
 
     def _slides_plain_to_markdown(self) -> str:
         parts: list[str] = []
@@ -6801,16 +6953,46 @@ class MainWindowFluent(FluentWindow):
             self._word_editor.toHtml(),
         )
 
+    def _run_office_export(
+        self,
+        *,
+        target_name: str,
+        path: Path,
+        action: Callable[[], None],
+        expected_pid: str | None = None,
+    ) -> bool:
+        try:
+            if expected_pid:
+                self._require_export_source(expected_pid, target_name)
+            action()
+        except ValueError as e:
+            self._log_event("导出", f"{target_name} 导出前检查失败：{e}", level="ERROR")
+            self._notify_error("导出失败", str(e))
+            return False
+        except OfficeExportError as e:
+            self._log_event("导出", f"{target_name} 导出失败：{e}", level="ERROR")
+            self._notify_error("导出失败", f"{path.name} 导出失败：{e}")
+            return False
+        except Exception as e:
+            self._log_event("导出", f"{target_name} 导出异常：{e}", level="ERROR")
+            self._notify_error("导出失败", f"{path.name} 导出失败：{e}")
+            return False
+        self._notify_office_export_success(target_name, path)
+        return True
+
     def _require_export_source(self, expected_pid: str, target_name: str) -> None:
         """限制格式专属导出入口只作用于对应内容源。"""
         current_pid = self._current_content_page_id()
-        if current_pid == expected_pid:
-            return
-        current_label = self._content_mode_label(current_pid)
-        expected_label = self._content_mode_label(expected_pid)
-        raise ValueError(
-            f"{target_name} 导出仅适用于“{expected_label}”内容；当前预览来源是“{current_label}”。"
-        )
+        try:
+            self._document_export_service.validate_source(current_pid, expected_pid, target_name)
+        except ValueError as e:
+            current_label = self._content_mode_label(current_pid)
+            expected_label = self._content_mode_label(expected_pid)
+            raise ValueError(
+                str(e)
+                .replace(f"“{expected_pid}”", f"“{expected_label}”")
+                .replace(f"“{current_pid}”", f"“{current_label}”")
+            ) from None
 
     def _import_markdown_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -6839,13 +7021,15 @@ class MainWindowFluent(FluentWindow):
             body = self._table_plain_to_markdown()
         else:
             body = self._word_editor.toPlainText()
-        try:
-            export_markdown(Path(path), body=body)
-        except Exception as e:
-            self._log_event("导出", f"Markdown 导出失败：{e}", level="ERROR")
-            self._notify_error("导出失败", f"{Path(path).name} 导出失败：{e}")
-            return
-        self._notify_office_export_success("Markdown", Path(path))
+        target_path = Path(path)
+        self._run_office_export(
+            target_name="Markdown",
+            path=target_path,
+            action=lambda: self._document_export_service.export_markdown_document(
+                target_path,
+                body=body,
+            ),
+        )
 
     def _docx_paragraphs_from_editor_widget(self, ed) -> List[DocParagraph]:  # noqa: ANN001
         """高保真（基础）：从 QTextDocument 抽取段落与字符级样式。"""
@@ -6908,9 +7092,7 @@ class MainWindowFluent(FluentWindow):
         return self._docx_paragraphs_from_editor_widget(editor)
 
     def _soffice_ready_hint(self) -> str:
-        if has_soffice():
-            return "已检测到 soffice（高保真导出已启用）"
-        return "未检测到 soffice（使用纯 Python 导出）"
+        return self._document_export_service.backend_hint()
 
     # ---------- 串口 / GRBL ----------
     def _log_append(self, s: str, *, category: str = "运行") -> None:

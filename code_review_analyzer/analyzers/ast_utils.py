@@ -15,11 +15,35 @@
 """
 
 import ast
+import locale
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 # 全局缓存管理器（延迟初始化）
 _cache_manager = None
+
+
+def _read_python_source(filepath: Path) -> str:
+    """Read Python source with a pragmatic fallback for local legacy encodings."""
+    encodings = ["utf-8", locale.getpreferredencoding(False)]
+    tried: set[str] = set()
+    last_error: UnicodeDecodeError | None = None
+
+    for encoding in encodings:
+        normalized = (encoding or "").strip()
+        if not normalized or normalized in tried:
+            continue
+        tried.add(normalized)
+        try:
+            with open(filepath, "r", encoding=normalized) as f:
+                return f.read()
+        except UnicodeDecodeError as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    with open(filepath, "r", encoding="utf-8") as f:
+        return f.read()
 
 
 def set_cache_manager(cache_manager) -> None:
@@ -50,8 +74,7 @@ def parse_python_file(filepath: Path) -> Optional[ast.Module]:
             return cached_tree
     
     try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            source = f.read()
+        source = _read_python_source(filepath)
         tree = ast.parse(source)
         
         # 缓存结果
@@ -73,6 +96,8 @@ def find_method_calls(tree: ast.Module, method_name: str) -> List[Tuple[int, str
     Returns:
         (行号, 调用表达式) 列表
     """
+    if tree is None:
+        return []
     calls = []
     
     class MethodCallVisitor(ast.NodeVisitor):
@@ -102,6 +127,8 @@ def find_attribute_access(tree: ast.Module, attr_name: str) -> List[Tuple[int, s
     Returns:
         (行号, 属性访问表达式) 列表
     """
+    if tree is None:
+        return []
     accesses = []
     
     class AttributeVisitor(ast.NodeVisitor):
@@ -115,7 +142,7 @@ def find_attribute_access(tree: ast.Module, attr_name: str) -> List[Tuple[int, s
     return accesses
 
 
-def find_function_definitions(tree: ast.Module) -> List[Tuple[str, int, int]]:
+def find_function_definitions(tree: ast.Module | None) -> List[Tuple[str, int, int]]:
     """提取函数定义
     
     Args:
@@ -124,6 +151,8 @@ def find_function_definitions(tree: ast.Module) -> List[Tuple[str, int, int]]:
     Returns:
         (函数名, 起始行号, 结束行号) 列表
     """
+    if tree is None:
+        return []
     functions = []
     
     class FunctionVisitor(ast.NodeVisitor):
@@ -142,7 +171,7 @@ def find_function_definitions(tree: ast.Module) -> List[Tuple[str, int, int]]:
     return functions
 
 
-def find_class_definitions(tree: ast.Module) -> List[Tuple[str, int, int]]:
+def find_class_definitions(tree: ast.Module | None) -> List[Tuple[str, int, int]]:
     """提取类定义
     
     Args:
@@ -151,6 +180,8 @@ def find_class_definitions(tree: ast.Module) -> List[Tuple[str, int, int]]:
     Returns:
         (类名, 起始行号, 结束行号) 列表
     """
+    if tree is None:
+        return []
     classes = []
     
     class ClassVisitor(ast.NodeVisitor):
@@ -164,7 +195,7 @@ def find_class_definitions(tree: ast.Module) -> List[Tuple[str, int, int]]:
     return classes
 
 
-def get_function_size(tree: ast.Module, func_name: str) -> Optional[int]:
+def get_function_size(tree: ast.Module | None, func_name: str) -> Optional[int]:
     """获取函数的行数
     
     Args:
@@ -180,7 +211,7 @@ def get_function_size(tree: ast.Module, func_name: str) -> Optional[int]:
     return None
 
 
-def get_class_methods(tree: ast.Module, class_name: str) -> List[Tuple[str, int, int]]:
+def get_class_methods(tree: ast.Module | None, class_name: str) -> List[Tuple[str, int, int]]:
     """获取类的所有方法
     
     Args:
@@ -190,6 +221,8 @@ def get_class_methods(tree: ast.Module, class_name: str) -> List[Tuple[str, int,
     Returns:
         (方法名, 起始行号, 结束行号) 列表
     """
+    if tree is None:
+        return []
     methods = []
     
     class MethodVisitor(ast.NodeVisitor):
@@ -211,7 +244,7 @@ def get_class_methods(tree: ast.Module, class_name: str) -> List[Tuple[str, int,
     return methods
 
 
-def find_imports(tree: ast.Module) -> List[Tuple[int, str, Optional[str]]]:
+def find_imports(tree: ast.Module | None) -> List[Tuple[int, str, Optional[str]]]:
     """查找所有导入语句
     
     Args:
@@ -220,6 +253,8 @@ def find_imports(tree: ast.Module) -> List[Tuple[int, str, Optional[str]]]:
     Returns:
         (行号, 模块名, 别名) 列表
     """
+    if tree is None:
+        return []
     imports = []
     
     class ImportVisitor(ast.NodeVisitor):
@@ -239,7 +274,7 @@ def find_imports(tree: ast.Module) -> List[Tuple[int, str, Optional[str]]]:
     return imports
 
 
-def find_async_functions_without_await(tree: ast.Module) -> List[Tuple[str, int]]:
+def find_async_functions_without_await(tree: ast.Module | None) -> List[Tuple[str, int]]:
     """查找没有 await 调用的 async 函数
     
     Args:
@@ -248,6 +283,8 @@ def find_async_functions_without_await(tree: ast.Module) -> List[Tuple[str, int]
     Returns:
         (函数名, 行号) 列表
     """
+    if tree is None:
+        return []
     async_funcs_without_await = []
     
     class AsyncVisitor(ast.NodeVisitor):
@@ -281,13 +318,12 @@ def count_lines(filepath: Path) -> int:
         文件行数
     """
     try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            return len(f.readlines())
+        return len(_read_python_source(filepath).splitlines())
     except (IOError, UnicodeDecodeError):
         return 0
 
 
-def count_dataclass_fields(tree: ast.Module, class_name: str) -> int:
+def count_dataclass_fields(tree: ast.Module | None, class_name: str) -> int:
     """计算 dataclass 的字段数量
     
     Args:
@@ -297,6 +333,8 @@ def count_dataclass_fields(tree: ast.Module, class_name: str) -> int:
     Returns:
         字段数量
     """
+    if tree is None:
+        return 0
     count = 0
     
     class FieldVisitor(ast.NodeVisitor):
@@ -312,7 +350,7 @@ def count_dataclass_fields(tree: ast.Module, class_name: str) -> int:
     return count
 
 
-def count_instance_variables(tree: ast.Module, class_name: str) -> int:
+def count_instance_variables(tree: ast.Module | None, class_name: str) -> int:
     """计算类的实例变量数量
     
     Args:
@@ -322,6 +360,8 @@ def count_instance_variables(tree: ast.Module, class_name: str) -> int:
     Returns:
         实例变量数量
     """
+    if tree is None:
+        return 0
     count = 0
     
     class VarVisitor(ast.NodeVisitor):
@@ -345,7 +385,7 @@ def count_instance_variables(tree: ast.Module, class_name: str) -> int:
     return count
 
 
-def get_all_exports(tree: ast.Module) -> List[str]:
+def get_all_exports(tree: ast.Module | None) -> List[str]:
     """获取 __all__ 中声明的导出
     
     Args:
@@ -354,6 +394,8 @@ def get_all_exports(tree: ast.Module) -> List[str]:
     Returns:
         导出名称列表
     """
+    if tree is None:
+        return []
     exports = []
     
     class AllVisitor(ast.NodeVisitor):
@@ -370,7 +412,7 @@ def get_all_exports(tree: ast.Module) -> List[str]:
     return exports
 
 
-def find_duplicate_branches(tree: ast.Module) -> List[Tuple[int, str]]:
+def find_duplicate_branches(tree: ast.Module | None) -> List[Tuple[int, str]]:
     """查找重复的条件分支
     
     Args:
@@ -379,6 +421,8 @@ def find_duplicate_branches(tree: ast.Module) -> List[Tuple[int, str]]:
     Returns:
         (行号, 分支类型) 列表
     """
+    if tree is None:
+        return []
     duplicates = []
     
     class BranchVisitor(ast.NodeVisitor):
